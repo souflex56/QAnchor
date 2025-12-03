@@ -1,0 +1,136 @@
+{
+  "generated_at": "2025-12-01T14:38:34.550353+00:00",
+  "master_path": "finglm_data_store/finglm_master_dedup.jsonl",
+  "dimension_stats_snapshot": {
+    "total_qa": 6811,
+    "with_year": 6539,
+    "with_company": 6610,
+    "generic": 201
+  },
+  "cross_dimension_snapshot": {
+    "single_company_single_year": {
+      "count": 5092,
+      "percentage": 74.7614153575099
+    },
+    "single_company_multi_year": {
+      "count": 1163,
+      "percentage": 17.075319336367638
+    },
+    "multi_company_single_year": {
+      "count": 310,
+      "percentage": 4.551460872118632
+    },
+    "multi_company_multi_year": {
+      "count": 45,
+      "percentage": 0.6606959330494788
+    },
+    "generic": {
+      "count": 201,
+      "percentage": 2.9511085009543385
+    }
+  },
+  "subsets": [
+    {
+      "name": "single_company_single_year_core",
+      "description": "1公司+1年份，类型 ∈ {1,1-2,2-1,2-2,3-1}，RAG 主战场",
+      "usage": [
+        "retrieval",
+        "reranker",
+        "neutral_answering"
+      ],
+      "notes": "用于检索/重排/中性回答蒸馏，优先覆盖已有 PDF 的公司年份。",
+      "filters": {
+        "cross_dimension": [
+          "1co_1yr"
+        ],
+        "types": [
+          "1",
+          "1-2",
+          "2-1",
+          "2-2",
+          "3-1"
+        ]
+      },
+      "count": 5021,
+      "index_path": "finglm_data_store/index/single_company_single_year_core.json"
+    },
+    {
+      "name": "single_company_multi_year",
+      "description": "1公司 + 多年份（时序/趋势问题）",
+      "usage": [
+        "advanced_retrieval",
+        "trend_reasoning"
+      ],
+      "notes": "阶段 2 使用的数据，支持时序对比和增长率类问答。",
+      "filters": {
+        "cross_dimension": [
+          "1co_multi_yr"
+        ]
+      },
+      "count": 1163,
+      "index_path": "finglm_data_store/index/single_company_multi_year.json"
+    },
+    {
+      "name": "multi_company_single_year",
+      "description": "多公司 + 单一年份（横向对比）",
+      "usage": [
+        "analysis",
+        "evaluation"
+      ],
+      "notes": "当前阶段优先级低，可用于未来的横向对比检索。",
+      "filters": {
+        "cross_dimension": [
+          "multi_co_1yr"
+        ]
+      },
+      "count": 310,
+      "index_path": "finglm_data_store/index/multi_company_single_year.json"
+    },
+    {
+      "name": "multi_company_multi_year",
+      "description": "多公司 + 多个年份（复杂对比）",
+      "usage": [
+        "analysis"
+      ],
+      "notes": "数量最少（77），作为高难度 QA 预留。",
+      "filters": {
+        "cross_dimension": [
+          "multi_co_multi_yr"
+        ]
+      },
+      "count": 45,
+      "index_path": "finglm_data_store/index/multi_company_multi_year.json"
+    },
+    {
+      "name": "type_3_2_concept",
+      "description": "Type 3-2 概念题，可作为段永平风格 teacher",
+      "usage": [
+        "concept_knowledge",
+        "duan_style_teacher"
+      ],
+      "notes": "后续可改写成段式回答，用于风格 SFT。",
+      "filters": {
+        "types": [
+          "3-2"
+        ]
+      },
+      "count": 272,
+      "index_path": "finglm_data_store/index/type_3_2_concept.json"
+    },
+    {
+      "name": "generic_no_company_year",
+      "description": "无公司、无年份信息的问答（cross_dimension == generic）",
+      "usage": [
+        "concept_knowledge"
+      ],
+      "notes": "与 type_3_2 基本一致，用于快速定位概念题。",
+      "filters": {
+        "cross_dimension": [
+          "generic"
+        ]
+      },
+      "count": 201,
+      "index_path": "finglm_data_store/index/generic_no_company_year.json"
+    }
+  ]
+}

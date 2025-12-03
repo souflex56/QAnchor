@@ -1,0 +1,159 @@
+# QAnchor Project .gitignore
+
+# ============================================
+# 用户指定的忽略目录
+# ============================================
+# PDF 报告文件目录（11GB，包含 1780 个 PDF 文件）
+data/input/finglm_report_pdf/
+
+# 参考代码和文档目录（37MB）
+Reference/
+
+# 项目记忆库目录（44KB）
+memory-bank/
+
+# ============================================
+# Python 相关
+# ============================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv
+
+# ============================================
+# IDE 和编辑器
+# ============================================
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# ============================================
+# 操作系统文件
+# ============================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ============================================
+# 数据文件（大文件）
+# ============================================
+# 大型 JSON/JSONL 文件（如果不需要版本控制）
+# *.jsonl
+# *.json
+
+# 大型 CSV 文件
+# *.csv
+
+# 压缩文件
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# ============================================
+# 日志和临时文件
+# ============================================
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# ============================================
+# 环境变量和密钥
+# ============================================
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets/
+*.secret
+
+# ============================================
+# 其他
+# ============================================
+# 备份文件
+*.bak
+*.backup
+*.old
+
+# 临时目录
+tmp/
+temp/
+.tmp/
+

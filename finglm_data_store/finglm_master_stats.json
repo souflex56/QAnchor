@@ -1,0 +1,25 @@
+{
+  "generated_at": "2025-12-01T14:38:33.771479+00:00",
+  "total": 10000,
+  "by_source": {
+    "pre": 5000,
+    "A": 2000,
+    "B": 2000,
+    "C": 1000
+  },
+  "type_distribution": {
+    "3-1": 850,
+    "1": 3952,
+    "3-2": 838,
+    "2-1": 3078,
+    "2-2": 271,
+    "1-2": 1011
+  },
+  "cross_dimension_distribution": {
+    "1co_1yr": 7424,
+    "multi_co_multi_yr": 77,
+    "1co_multi_yr": 1491,
+    "generic": 593,
+    "multi_co_1yr": 415
+  }
+}
