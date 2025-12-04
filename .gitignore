@@ -1,4 +1,5 @@
-# QAnchor Project .gitignore
+# finglm-data-eda Project .gitignore
+
 
 # ============================================
 # 用户指定的忽略目录
@@ -11,6 +12,9 @@ Reference/
 
 # 项目记忆库目录（44KB）
 memory-bank/
+
+src/
+tests/
 
 # ============================================
 # Python 相关

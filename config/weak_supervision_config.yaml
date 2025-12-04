@@ -1,0 +1,51 @@
+# 弱监督 Query–Chunk 管线配置
+
+data:
+  qa_mapping: "finglm_data_store/type1_1co1yr_pdf_map.csv"
+  answers: "finglm_data_store/finglm_master.jsonl"
+  pdf_dir: "data/input/finglm_report_pdf"
+  chunk_output: "data/output/chunks"
+  pair_output: "data/output/weak_pairs"
+  summary: "finglm_data_store/type1_1co1yr_pdf_summary.csv"
+
+stages:
+  stage0:
+    pdf_count_cap: 20   # 安全上限，防止长尾 PDF 无限累加
+    qa_count: 60        # 以 QA 数为主目标，优先多 QA PDF 直到接近该值
+    description: "内部调试，优先选多QA的PDF"
+  stage1:
+    pdf_count_cap: 40
+    qa_count: 100
+  stage2:
+    pdf_count_cap: 70
+    qa_count: 300
+  stage3:
+    pdf_count_cap: 130
+    qa_count: 800
+
+retrieval:
+  embedding_model: "Qwen2.5-Embedding"
+  top_k: 30
+  batch_size: 32
+  use_bm25: false              # Stage0/1 默认关闭，Stage2+ 可开启
+  bm25_top_k: 50
+  chunk_level: "child"         # 以子块为检索主键
+  parent_concat: false         # embedding 不拼接 parent；parent 仅供精筛/生成时取上下文
+
+teacher:
+  model: "deepseek-chat"
+  api_key: null
+  temperature: 0.1
+  enable: false
+
+labeling:
+  positive_threshold: 0.45
+  negative_threshold: 0.2
+
+negative_sampling:
+  intra_doc_count: 5
+  cross_doc_count: 3
+  cross_doc_strategy: "same_company_diff_year_or_peer"  # 先同公司异年，再同行业异公司
+  negative_subtype:
+    - "same_company_diff_year"
+    - "same_industry_diff_company"
