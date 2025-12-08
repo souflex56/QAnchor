@@ -13,8 +13,8 @@ Reference/
 # 项目记忆库目录（44KB）
 memory-bank/
 
-src/
-tests/
+#src/
+#tests/
 
 # ============================================
 # Python 相关

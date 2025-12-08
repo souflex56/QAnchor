@@ -8,6 +8,9 @@ data:
   pair_output: "data/output/weak_pairs"
   summary: "finglm_data_store/type1_1co1yr_pdf_summary.csv"
 
+zenparse:
+  config: "config/zenparse_config.yaml"  # ZenParse 解析与分块参数
+
 stages:
   stage0:
     pdf_count_cap: 20   # 安全上限，防止长尾 PDF 无限累加

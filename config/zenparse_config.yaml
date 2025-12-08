@@ -1,0 +1,59 @@
+# ZenParse 解析与分块参数（本地副本）
+
+pdf_parsing:
+  # 解析策略：
+  # - auto        自动选择最合适的解析引擎（默认优先使用 pdfplumber，必要时回退到其他引擎）
+  # - pdfplumber  只使用 pdfplumber（速度快、对电子版财报效果好）
+  # - unstructured 使用 unstructured 的高分辨率解析（适合复杂/扫描版，但较慢）
+  # - hybrid_table 启用高级表格检测与结构化（最慢，仅在特别需要表格结构时建议开启）
+  strategies:
+    - hybrid_table
+
+# 表格抽取与高级检测配置
+table_extraction:
+  advanced_model: doclayout_yolo       # doclayout_yolo / detectron2 / none
+  model_path: null                     # 自定义权重路径，null 表示使用默认或从 HuggingFace 下载
+  model_repo: "juliozhao/DocLayout-YOLO-DocStructBench"  # HuggingFace 模型仓库
+  model_filename: "doclayout_yolo_docstructbench_imgsz1024.pt"  # 模型文件名
+  # 其他可选模型：
+  # model_repo: "juliozhao/DocLayout-YOLO-DocLayNet"
+  # model_repo: "juliozhao/DocLayout-YOLO-D4LA"
+  # model_repo: "juliozhao/DocLayout-YOLO-DocSynth300K-pretrain"
+  quality_threshold: 0.65              # 表格质量低于此值触发高级检测
+  detection_conf: 0.30                 # 模型置信度阈值
+  detection_iou: 0.50                  # 模型 NMS IoU 阈值
+  bbox_padding_ratio: 0.02             # YOLO 框裁剪前的扩张比例
+  merge_iou_threshold: 0.55            # 表格去重合并的 IoU 阈值
+  render_dpi: 150                      # 页面渲染 DPI（供检测用）
+  skip_ocr_for_digital: true           # 数字 PDF 跳过 OCR 兜底
+  ocr_trigger_char_threshold: 10       # bbox 内字符数低于此触发 OCR
+
+context:
+  context_before: 10
+  context_after: 3
+
+chunking:
+  parent_size: 4000
+  child_size: 1200
+  overlap: 200
+  min_chunk_size: 50
+  min_quality_score: 0.3
+  table:
+    include_header_hierarchy: true   # 子块内容带上科目/表头层级
+    hierarchy_max_depth: 4
+    hierarchy_max_length: 50
+    hierarchy_format: "prefix"       # prefix 或 indent
+    skip_numeric_rows: true
+
+standards_detection:
+  enabled: true
+  # 仅在此时间窗内启用精细检测
+  transition_start_year: 2017
+  transition_end_year: 2021
+  # 过渡期内部阈值（用于年份兜底）
+  revenue_new_threshold_year: 2019
+  financial_new_threshold_year: 2019
+  lease_new_threshold_year: 2021
+  # 时间窗外默认策略
+  default_before_transition: old
+  default_after_transition: new
