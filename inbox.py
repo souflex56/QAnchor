@@ -1,22 +1,24 @@
-cd /Users/skybay7/CloudStorage/BaiduYun/LLM-Prj/QAnchor
-python - <<'PY'
-from pathlib import Path
-import yaml
-from src.data_loader import select_pdf_subset
+请读取 memory-bank 中所有文件，尤其是 implementation-plan.md、progress.md 和 architecture.md。
+这次只执行 implementation-plan.md 中的 Step 2.1，注意：
+  • 只能改与本 Step 直接相关的文件；
+  • 每个文件改动尽量聚焦，不要顺手重构太多东西。
 
-cfg = yaml.safe_load(Path("config/weak_supervision_config.yaml").read_text())
-res = select_pdf_subset(
-    stage="stage0",
-    summary_path=cfg["data"]["summary"],
-    pdf_dir=cfg["data"]["pdf_dir"],
-    stage_config=cfg["stages"],
-)
-print(res["stats"])
-print(res["records"][:2])  # 查看前2个样本
-PY
+执行流程：
+1. 简要复述 Step 2.1 的目标和你打算改哪些文件；
+2. 给出具体代码修改（带文件路径）；
+3. 告诉我如何本地自测（给出完整 CLI 命令）。
 
-我已经按你给的命令在本地测试过，Step 1+2 功能正常。
-请现在：
-1. 更新 memory-bank/progress.md，增加一条记录；
-2. 更新 memory-bank/architecture.md，把本次新增/修改的模块和文件补充进去。
+请读取 memory-bank 中所有文件，尤其是 implementation-plan.md、progress.md 和 architecture.md。
+这次只执行 implementation-plan.md 中的 Step 3a，注意：
+  • 只能改与本 Step 直接相关的文件；
+  • 每个文件改动尽量聚焦，不要顺手重构太多东西。
+
+执行流程：
+1. 简要复述 Step 3a 的目标和你打算改哪些文件；
+2. 给出具体代码修改（带文件路径）；
+3. 告诉我如何本地自测
+
+暂时不要更新 progress.md 和 architecture.md，等我本地测通过后再一起改。
+
+
 
