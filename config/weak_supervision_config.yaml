@@ -27,9 +27,23 @@ stages:
     qa_count: 800
 
 retrieval:
-  embedding_model: "Qwen2.5-Embedding"
+  embedding_model: "Qwen/Qwen3-Embedding-4B"  # 可切换为 "bge-m3"
+  model_backend: "sentence-transformers"
   top_k: 30
-  batch_size: 32
+  #batch_size: 32
+  batch_size: 2
+  normalize_embeddings: true
+  device: "mps"
+  restrict_to_query_pdf: true      # 仅在与 query 同 pdf_stem 的 chunks 内检索
+  section_blacklist_enabled: false # 默认关闭，打开后按下方黑名单过滤噪声段
+  section_blacklist:
+    - "释义"
+    - "董事"
+    - "监事"
+    - "高级管理人员"
+    - "员工"
+    - "社会责任"
+    - "其他重要事项"
   use_bm25: false              # Stage0/1 默认关闭，Stage2+ 可开启
   bm25_top_k: 50
   chunk_level: "child"         # 以子块为检索主键
