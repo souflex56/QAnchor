@@ -5,6 +5,8 @@ data:
   answers: "finglm_data_store/finglm_master.jsonl"
   pdf_dir: "data/input/finglm_report_pdf"
   chunk_output: "data/output/chunks"
+  retrieval_output: "data/output/retrieval"
+  annotations_output: "data/output/annotations"
   pair_output: "data/output/weak_pairs"
   summary: "finglm_data_store/type1_1co1yr_pdf_summary.csv"
 
@@ -27,13 +29,12 @@ stages:
     qa_count: 800
 
 retrieval:
-  embedding_model: "Qwen/Qwen3-Embedding-4B"  # 可切换为 "bge-m3"
+  embedding_model: "Qwen/Qwen3-Embedding-0.6B"  # 可切换为 "bge-m3"
   model_backend: "sentence-transformers"
   top_k: 30
-  #batch_size: 32
-  batch_size: 2
+  batch_size: 16
   normalize_embeddings: true
-  device: "mps"
+  device: "cpu"
   restrict_to_query_pdf: true      # 仅在与 query 同 pdf_stem 的 chunks 内检索
   section_blacklist_enabled: false # 默认关闭，打开后按下方黑名单过滤噪声段
   section_blacklist:
@@ -44,10 +45,31 @@ retrieval:
     - "员工"
     - "社会责任"
     - "其他重要事项"
-  use_bm25: false              # Stage0/1 默认关闭，Stage2+ 可开启
-  bm25_top_k: 50
   chunk_level: "child"         # 以子块为检索主键
   parent_concat: false         # embedding 不拼接 parent；parent 仅供精筛/生成时取上下文
+
+  # 3a-0: Gold 标注与阈值校准
+  gold_annotation:
+    enabled: true                                # Stage0 必须先标注
+    path: "data/output/annotations/gold_stage0.jsonl"
+    sample_size: 20                              # 每个 stage 标注 20-30 条
+
+  thresholds:
+    source: "gold"                               # "gold" | "distribution" | "manual"
+    positive_threshold: null                     # 从 gold 自动计算
+    negative_threshold: null                     # 从 gold 自动计算
+
+  # 3a-1: BM25
+  bm25:
+    enabled: false                               # Stage0 可选，Stage1+ 建议开启
+    top_k: 50
+
+  # 3a-2: Hybrid
+  hybrid:
+    enabled: false                               # 3a-1 完成后开启
+    embedding_weight: 0.7
+    bm25_weight: 0.3
+    fusion_method: "rrf"                         # "rrf" | "weighted_sum" | "max"
 
 teacher:
   model: "deepseek-chat"
@@ -55,14 +77,16 @@ teacher:
   temperature: 0.1
   enable: false
 
-labeling:
-  positive_threshold: 0.45
-  negative_threshold: 0.2
+weak_supervision:
+  pair_generation:
+    require_calibrated_thresholds: true          # 强制依赖 3a-0 阈值
 
-negative_sampling:
-  intra_doc_count: 5
-  cross_doc_count: 3
-  cross_doc_strategy: "same_company_diff_year_or_peer"  # 先同公司异年，再同行业异公司
-  negative_subtype:
-    - "same_company_diff_year"
-    - "same_industry_diff_company"
+    negative_sampling:
+      intra_doc:
+        enabled: true
+        ratio: 2                                 # 每个正例对应 2 个同文档难负例
+      cross_doc:
+        enabled: true
+        ratio: 1
+        strategy: "same_company_diff_year"       # 优先同公司跨年
+        fallback_strategy: "same_industry_diff_company"
