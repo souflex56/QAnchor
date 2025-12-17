@@ -7,6 +7,7 @@ import argparse
 import json
 import sys
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
@@ -157,6 +158,40 @@ def _print_distribution(scores: List[float]) -> None:
     print("Histogram (0.1 bins): " + "; ".join(hist_parts))
 
 
+def _calc_percentiles(scores: List[float]) -> Dict[str, float]:
+    if not scores:
+        return {}
+    percentiles = [10, 25, 50, 75, 90, 95, 99]
+    pct_values = np.percentile(np.array(scores), percentiles)
+    return {f"p{p}": float(v) for p, v in zip(percentiles, pct_values)}
+
+
+def _save_checkpoint(
+    path: Path,
+    *,
+    stage: str,
+    chunk_files: Sequence[Path],
+    qa_mapping: Path,
+    answers: Path,
+    output_file: Path,
+    params: Dict[str, Any],
+    summary: Dict[str, Any],
+) -> None:
+    checkpoint = {
+        "stage": stage,
+        "step": 3,
+        "step_name": "embedding_retrieval",
+        "completed_at": datetime.utcnow().isoformat() + "Z",
+        "input_files": [str(qa_mapping), str(answers), *[str(p) for p in chunk_files]],
+        "output_files": [str(output_file)],
+        "params": params,
+        "summary": summary,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"已写入 checkpoint: {path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stage0 embedding-only 检索")
     parser.add_argument("--stage", default="stage0", help="阶段名称，默认 stage0")
@@ -179,6 +214,37 @@ def main() -> None:
         help="覆盖配置的 embedding 模型名",
     )
     parser.add_argument("--device", default=None, help="覆盖配置的设备，如 cpu 或 cuda:0")
+    parser.add_argument(
+        "--output-format",
+        dest="output_format",
+        choices=["flat", "nested"],
+        default="flat",
+        help="输出格式：flat=每个hit独立一行（默认，适合Step4处理），nested=每个query一行含hits数组（适合标注模板）",
+    )
+    parser.add_argument(
+        "--generate-annotation-template",
+        dest="generate_annotation_template",
+        action="store_true",
+        help="快捷开关，等价于 nested 输出且包含 answers，输出文件名默认 embedding_{stage}_template.jsonl",
+    )
+    parser.add_argument(
+        "--include-answers",
+        dest="include_answers",
+        action="store_true",
+        help="flat格式时是否包含answers字段（默认不包含以减少冗余；Step4会从finglm_master.jsonl join）",
+    )
+    parser.add_argument(
+        "--save-checkpoint",
+        dest="save_checkpoint",
+        action="store_true",
+        help="写入 checkpoint 到 data/output/checkpoints/stage0_step_3.json（或按 stage 命名）",
+    )
+    parser.add_argument(
+        "--checkpoint-path",
+        dest="checkpoint_path",
+        default=None,
+        help="自定义 checkpoint 输出路径（默认 data/output/checkpoints/stage{stage}_step_3.json）",
+    )
     args = parser.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
@@ -187,9 +253,15 @@ def main() -> None:
 
     chunk_dir = Path(data_cfg["chunk_output"])
     chunk_dir.mkdir(parents=True, exist_ok=True)
-    output_dir = Path(args.output or f"data/output/retrieval/embedding_{args.stage}.jsonl").parent
+    default_output = f"data/output/retrieval/embedding_{args.stage}.jsonl"
+    if args.generate_annotation_template:
+        # 强制 nested + answers，默认输出文件改为 template 命名
+        args.output_format = "nested"
+        args.include_answers = True
+        default_output = f"data/output/retrieval/embedding_{args.stage}_template.jsonl"
+    output_path = Path(args.output or default_output)
+    output_dir = output_path.parent
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = Path(args.output or f"data/output/retrieval/embedding_{args.stage}.jsonl")
 
     subset = select_pdf_subset(
         stage=args.stage,
@@ -260,12 +332,24 @@ def main() -> None:
     normalize = retrieval_cfg.get("normalize_embeddings", True)
     top_k = args.top_k or retrieval_cfg.get("top_k", 30)
     restrict_to_query_pdf = retrieval_cfg.get("restrict_to_query_pdf", True)
+    max_seq_length = retrieval_cfg.get("max_seq_length")
+    empty_cache_interval = retrieval_cfg.get("empty_cache_interval", 10)
+    precision_mode = retrieval_cfg.get("precision_mode", "auto")
+    enable_empty_cache = retrieval_cfg.get("enable_empty_cache", True)
+    use_inference_mode = retrieval_cfg.get("use_inference_mode", True)
+    mem_log_interval = retrieval_cfg.get("mem_log_interval")
 
     retriever = EmbeddingRetriever(
         model_name=embedding_model,
         device=device,
         batch_size=batch_size,
         normalize=normalize,
+        max_seq_length=max_seq_length,
+        empty_cache_interval=empty_cache_interval,
+        precision_mode=precision_mode,
+        enable_empty_cache=enable_empty_cache,
+        use_inference_mode=use_inference_mode,
+        mem_log_interval=mem_log_interval,
     )
 
     print(f"编码 {len(chunk_texts)} 个 chunks ...")
@@ -297,19 +381,113 @@ def main() -> None:
     else:
         all_hits = retriever.retrieve_top_k(query_embs, chunk_embs, chunk_metas, top_k=top_k)
 
+    nohit_records: List[Dict[str, Any]] = []
+
     # 输出 JSONL
     with output_path.open("w", encoding="utf-8") as f:
-        for query_rec, hits in zip(queries, all_hits):
-            out = dict(query_rec)
-            out["hits"] = hits
-            f.write(json.dumps(out, ensure_ascii=False) + "\n")
+        if args.output_format == "nested":
+            # 嵌套格式：每个 query 一行，hits 为数组
+            for query_rec, hits in zip(queries, all_hits):
+                out = dict(query_rec)
+                out["hits"] = hits
+                f.write(json.dumps(out, ensure_ascii=False) + "\n")
+                if not hits:
+                    nohit_records.append(
+                        {
+                            "query_id": query_rec.get("query_id"),
+                            "query": query_rec.get("query"),
+                            "pdf": query_rec.get("pdf"),
+                            "company": query_rec.get("company"),
+                            "year": query_rec.get("year"),
+                        }
+                    )
+        else:
+            # 扁平格式：每个 hit 独立一行
+            total_records = 0
+            for query_rec, hits in zip(queries, all_hits):
+                # 提取 query 基础信息
+                query_base = {
+                    "query_id": query_rec.get("query_id"),
+                    "query": query_rec.get("query"),
+                    "pdf": query_rec.get("pdf"),
+                    "company": query_rec.get("company"),
+                    "year": query_rec.get("year"),
+                }
+                # 可选：包含 answers（调试用）
+                if args.include_answers and "answers" in query_rec:
+                    query_base["answers"] = query_rec["answers"]
+                
+                if not hits:
+                    nohit_records.append(query_base)
+                    continue
 
-    print(f"已写入检索结果：{output_path}")
+                # 展开每个 hit 为独立记录；优先保留 query 层的 pdf，命名 chunk 所在 pdf 为 source_pdf
+                for hit in hits:
+                    hit_pdf = hit.get("pdf")
+                    hit_meta = {k: v for k, v in hit.items() if k != "pdf"}
+                    flat_record = {**query_base, **hit_meta}
+                    if hit_pdf is not None:
+                        flat_record["source_pdf"] = hit_pdf
+                    f.write(json.dumps(flat_record, ensure_ascii=False) + "\n")
+                    total_records += 1
+
+            print(f"已展开为 {total_records} 条扁平记录")
+
+    format_desc = f"格式={args.output_format}"
+    if args.output_format == "flat" and not args.include_answers:
+        format_desc += "（不含answers，Step4需join finglm_master.jsonl）"
+    print(f"已写入检索结果：{output_path} [{format_desc}]")
+
+    if nohit_records:
+        nohit_path = output_path.with_name(f"{output_path.stem}_nohits.jsonl")
+        with nohit_path.open("w", encoding="utf-8") as nf:
+            for rec in nohit_records:
+                nf.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        print(f"额外记录 {len(nohit_records)} 个无候选的 query → {nohit_path}")
 
     # 分布统计
     score_pool = [hit["score"] for hits in all_hits for hit in hits]
     print(f"总计候选: {len(score_pool)}")
     _print_distribution(score_pool)
+
+    if args.save_checkpoint:
+        # 只记录本次实际使用的 chunk 文件
+        chunk_files_used = [chunk_dir / f"{stem}_chunks.json" for stem in used_pdfs if (chunk_dir / f"{stem}_chunks.json").exists()]
+        checkpoint_path = (
+            Path(args.checkpoint_path)
+            if args.checkpoint_path
+            else Path(f"data/output/checkpoints/{args.stage}_step_3.json")
+        )
+        params = {
+            "embedding_model": embedding_model,
+            "top_k": top_k,
+            "batch_size": batch_size,
+            "normalize_embeddings": normalize,
+            "restrict_to_query_pdf": restrict_to_query_pdf,
+            "section_blacklist_enabled": section_blacklist_enabled,
+            "output_format": args.output_format,
+            "include_answers": args.include_answers,
+        }
+        summary = {
+            "queries": len(queries),
+            "total_hits": len(score_pool),
+            "missing_chunk_files": len(missing_chunks),
+            "dropped_by_blacklist": dropped_by_blacklist,
+            "nohit_queries": len(nohit_records),
+            "score_percentiles": _calc_percentiles(score_pool),
+            "score_min": min(score_pool) if score_pool else None,
+            "score_max": max(score_pool) if score_pool else None,
+        }
+        _save_checkpoint(
+            checkpoint_path,
+            stage=args.stage,
+            chunk_files=chunk_files_used,
+            qa_mapping=Path(data_cfg["qa_mapping"]),
+            answers=Path(data_cfg["answers"]),
+            output_file=output_path,
+            params=params,
+            summary=summary,
+        )
 
 
 if __name__ == "__main__":

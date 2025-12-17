@@ -32,9 +32,15 @@ retrieval:
   embedding_model: "Qwen/Qwen3-Embedding-0.6B"  # 可切换为 "bge-m3"
   model_backend: "sentence-transformers"
   top_k: 30
-  batch_size: 16
+  batch_size: 4
+  max_seq_length: 512         # 限制序列长度，降低显存占用
+  empty_cache_interval: 5     # 每N个batch清理一次缓存，决定是否周期性调用 gc.collect() 及 mps/cuda empty_cache()，降低峰值。
+  precision_mode: "auto"      # auto | fp16 | fp32；auto 非 CPU 默认尝试半精度以省显存。
+  enable_empty_cache: true    # 控制是否周期性 empty_cache
+  use_inference_mode: true    # 控制是否使用 torch.inference_mode()，减少无谓梯度占用。
+  mem_log_interval: 10      # 内存日志频率，null=不打印；填整数（如10）表示每N个batch打印一次显存日志
   normalize_embeddings: true
-  device: "cpu"
+  device: "mps" # or "mps" or "cuda"
   restrict_to_query_pdf: true      # 仅在与 query 同 pdf_stem 的 chunks 内检索
   section_blacklist_enabled: false # 默认关闭，打开后按下方黑名单过滤噪声段
   section_blacklist:
