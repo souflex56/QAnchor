@@ -1,0 +1,91 @@
+_wandb:
+    value:
+        cli_version: 0.23.1
+        e:
+            xc4ptrggfhb82fuy4f530a73eplj9k6w:
+                apple:
+                    ecpuCores: 4
+                    gpuCores: 30
+                    memoryGb: 32
+                    name: Apple M2 Max
+                    pcpuCores: 8
+                    ramTotalBytes: "34359738368"
+                    swapTotalBytes: "4294967296"
+                args:
+                    - --stage
+                    - stage0
+                    - --generate-annotation-template
+                    - --save-checkpoint
+                    - --wandb
+                    - --wandb-project
+                    - QAnchor
+                    - --wandb-run-name
+                    - stage0-embed-wandb
+                    - --output
+                    - data/output/retrieval/embedding_stage0_template_wandb-251216.jsonl
+                codePath: scripts/02_embedding_retrieval.py
+                codePathLocal: scripts/02_embedding_retrieval.py
+                cpu_count: 12
+                cpu_count_logical: 12
+                disk:
+                    /:
+                        total: "994662584320"
+                        used: "781494927360"
+                email: souflex@163.com
+                executable: /opt/miniconda3/envs/value-test/bin/python
+                git:
+                    commit: 9140075e81ebcfdc048941c68c7884e70f8eb17f
+                    remote: https://github.com/souflex56/QAnchor.git
+                host: samedi-M2max.local
+                memory:
+                    total: "34359738368"
+                os: macOS-26.1-arm64-arm-64bit
+                program: /Users/skybay7/CloudStorage/BaiduYun/LLM-Prj/QAnchor/scripts/02_embedding_retrieval.py
+                python: CPython 3.11.9
+                root: /Users/skybay7/CloudStorage/BaiduYun/LLM-Prj/QAnchor
+                startedAt: "2025-12-16T13:09:24.723616Z"
+                writerId: xc4ptrggfhb82fuy4f530a73eplj9k6w
+        m: []
+        python_version: 3.11.9
+        t:
+            "1":
+                - 1
+                - 105
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+                - 71
+                - 75
+                - 105
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.11.9
+            "5": 0.23.1
+            "10":
+                - 20
+            "12": 0.23.1
+            "13": darwin-arm64
+batch_size:
+    value: 16
+device:
+    value: mps
+embedding_model:
+    value: Qwen/Qwen3-Embedding-0.6B
+include_answers:
+    value: true
+max_seq_length:
+    value: 512
+output_format:
+    value: nested
+precision_mode:
+    value: auto
+stage:
+    value: stage0
+top_k:
+    value: 30
