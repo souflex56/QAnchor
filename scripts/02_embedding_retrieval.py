@@ -6,14 +6,19 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import hashlib
+import os
+import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 import yaml
+from math import ceil
+from tqdm import tqdm
 
 # 确保仓库根目录可导入
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -140,6 +145,81 @@ def _section_is_blacklisted(section_path: Sequence[str], blacklist: Sequence[str
     return any(key in path_str for key in blacklist)
 
 
+def _compute_chunk_hash(chunk_ids: Sequence[str], texts: Sequence[str]) -> str:
+    """对 chunk 内容做稳定 hash（按 chunk_id 排序后流式计算）。"""
+    # 确保长度一致，缺失 chunk_id 用序号兜底
+    norm_ids = [cid if cid is not None else f"idx_{i}" for i, cid in enumerate(chunk_ids)]
+    pairs = list(zip(norm_ids, texts))
+    pairs.sort(key=lambda x: str(x[0]))
+    h = hashlib.sha1()
+    for cid, text in pairs:
+        h.update(str(cid).encode("utf-8"))
+        h.update(b"::")
+        h.update((text or "").encode("utf-8"))
+    return h.hexdigest()
+
+
+def _build_model_tag(
+    model_name: str,
+    normalize: bool,
+    max_seq_length: int | None,
+    precision_mode: str,
+    section_blacklist_enabled: bool,
+) -> str:
+    """将关键超参编码为目录安全的 tag。"""
+    safe_name = (
+        model_name.lower()
+        .replace("/", "-")
+        .replace(" ", "-")
+        .replace("@", "-")
+    )
+    norm_tag = "normT" if normalize else "normF"
+    msl_tag = f"msl{max_seq_length}" if max_seq_length else "mslNone"
+    pm_tag = f"pm{precision_mode}"
+    blk_tag = "blkT" if section_blacklist_enabled else "blkF"
+    return f"{safe_name}_{norm_tag}_{msl_tag}_{pm_tag}_{blk_tag}"
+
+
+def _collect_mem_metrics() -> Dict[str, float]:
+    """采集内存/显存信息，失败时返回已有字段。"""
+    metrics: Dict[str, float] = {}
+    try:
+        import psutil
+        import torch
+    except Exception:
+        return metrics
+    try:
+        vm = psutil.virtual_memory()
+        metrics["ram_used_gb"] = vm.used / 1e9
+        metrics["ram_avail_gb"] = vm.available / 1e9
+        metrics["cpu_percent"] = psutil.cpu_percent(interval=0)
+        if torch.cuda.is_available():
+            metrics["cuda_allocated_gb"] = torch.cuda.memory_allocated() / 1024**3
+            metrics["cuda_reserved_gb"] = torch.cuda.memory_reserved() / 1024**3
+        if torch.backends.mps.is_available():
+            metrics["mps_allocated_gb"] = torch.mps.current_allocated_memory() / 1024**3
+            metrics["mps_driver_gb"] = torch.mps.driver_allocated_memory() / 1024**3
+    except Exception:
+        return metrics
+    return metrics
+
+
+def _get_model_dtype(model: Any) -> str | None:
+    """尝试从模型参数中获取 dtype。"""
+    try:
+        import torch
+        params = None
+        if hasattr(model, "parameters"):
+            params = model.parameters()
+        if params:
+            first = next(iter(params))
+            if isinstance(first, torch.Tensor):
+                return str(first.dtype)
+    except Exception:
+        return None
+    return None
+
+
 def _print_distribution(scores: List[float]) -> None:
     if not scores:
         print("无相似度数据可统计")
@@ -181,7 +261,7 @@ def _save_checkpoint(
         "stage": stage,
         "step": 3,
         "step_name": "embedding_retrieval",
-        "completed_at": datetime.utcnow().isoformat() + "Z",
+        "completed_at": datetime.now(timezone(timedelta(hours=8))).isoformat(),
         "input_files": [str(qa_mapping), str(answers), *[str(p) for p in chunk_files]],
         "output_files": [str(output_file)],
         "params": params,
@@ -245,7 +325,23 @@ def main() -> None:
         default=None,
         help="自定义 checkpoint 输出路径（默认 data/output/checkpoints/stage{stage}_step_3.json）",
     )
+    parser.add_argument("--wandb", action="store_true", help="启用 wandb 记录")
+    parser.add_argument("--wandb-project", default="QAnchor", help="wandb 项目名")
+    parser.add_argument("--wandb-run-name", default=None, help="wandb run 名称")
+    parser.add_argument(
+        "--wandb-mode",
+        choices=["online", "offline", "disabled"],
+        default="online",
+        help="wandb 模式（online/offline/disabled）",
+    )
+    parser.add_argument(
+        "--wandb-log-interval",
+        type=int,
+        default=None,
+        help="编码阶段每多少个 batch 记录一次内存信息到 wandb（依赖 mem_log_interval）",
+    )
     args = parser.parse_args()
+    original_command = " ".join(sys.argv)
 
     cfg = yaml.safe_load(Path(args.config).read_text())
     data_cfg = cfg.get("data", {})
@@ -286,8 +382,7 @@ def main() -> None:
     print(f"本次查询涉及 PDF 数: {len(used_pdfs)}")
 
     # 加载 chunk 候选（只加载 used_pdfs）
-    chunk_texts: List[str] = []
-    chunk_metas: List[Dict[str, Any]] = []
+    per_pdf_chunks: Dict[str, Dict[str, Any]] = {}
     missing_chunks: List[str] = []
     section_blacklist_enabled = retrieval_cfg.get("section_blacklist_enabled", False)
     section_blacklist = retrieval_cfg.get("section_blacklist") or []
@@ -300,28 +395,26 @@ def main() -> None:
             missing_chunks.append(stem)
             continue
         texts, metas = _extract_child_chunks(cpath)
+        filtered_texts: List[str] = []
+        filtered_metas: List[Dict[str, Any]] = []
         if section_blacklist_enabled and section_blacklist:
             for text, meta in zip(texts, metas):
                 if _section_is_blacklisted(meta.get("section_path") or [], section_blacklist):
                     dropped_by_blacklist += 1
                     continue
-                chunk_texts.append(text)
-                chunk_metas.append(meta)
+                filtered_texts.append(text)
+                filtered_metas.append(meta)
         else:
-            chunk_texts.extend(texts)
-            chunk_metas.extend(metas)
+            filtered_texts = texts
+            filtered_metas = metas
+        per_pdf_chunks[stem] = {"texts": filtered_texts, "metas": filtered_metas}
     if missing_chunks:
         print(f"警告：缺少 {len(missing_chunks)} 个 chunk 文件，已跳过: {', '.join(missing_chunks[:5])}{' ...' if len(missing_chunks) > 5 else ''}")
     if dropped_by_blacklist:
         print(f"根据 section_blacklist 过滤掉 {dropped_by_blacklist} 个 chunks")
-    print(f"候选 child chunks: {len(chunk_metas)}")
-    # 预先建立 pdf_stem 到 chunk 索引的映射，方便同文档内检索
-    chunks_by_pdf: Dict[str, List[int]] = defaultdict(list)
-    for idx, meta in enumerate(chunk_metas):
-        pdf_key = meta.get("pdf_stem") or meta.get("pdf")
-        if pdf_key:
-            chunks_by_pdf[str(pdf_key)].append(idx)
-    if not chunk_texts:
+    total_candidate_chunks = sum(len(v["metas"]) for v in per_pdf_chunks.values())
+    print(f"候选 child chunks: {total_candidate_chunks}")
+    if total_candidate_chunks == 0:
         print("未找到可用的 chunk 数据，退出。")
         return
 
@@ -338,6 +431,58 @@ def main() -> None:
     enable_empty_cache = retrieval_cfg.get("enable_empty_cache", True)
     use_inference_mode = retrieval_cfg.get("use_inference_mode", True)
     mem_log_interval = retrieval_cfg.get("mem_log_interval")
+    wandb_log_interval = args.wandb_log_interval
+
+    model_tag = _build_model_tag(
+        embedding_model,
+        normalize=normalize,
+        max_seq_length=max_seq_length,
+        precision_mode=precision_mode,
+        section_blacklist_enabled=section_blacklist_enabled,
+    )
+    cache_dir = Path("data/output/embeddings") / model_tag
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    model_dtype = None
+
+    # 准备 tokenizer 长度函数（仅在需要记录 token 长度时使用，避免额外开销）
+    token_length_fn = None
+
+    wb = None
+    if args.wandb and args.wandb_mode != "disabled":
+        try:
+            import wandb
+
+            if args.wandb_mode == "offline":
+                os.environ["WANDB_MODE"] = "offline"
+            wb = wandb.init(
+                project=args.wandb_project,
+                name=args.wandb_run_name
+                or f"{args.stage}-embed-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
+                config={
+                    "stage": args.stage,
+                    "output_format": args.output_format,
+                    "top_k": top_k,
+                    "embedding_model": embedding_model,
+                    "model_tag": model_tag,
+                    "batch_size": batch_size,
+                    "max_seq_length": max_seq_length,
+                    "normalize_embeddings": normalize,
+                    "precision_mode": precision_mode,
+                    "restrict_to_query_pdf": restrict_to_query_pdf,
+                    "section_blacklist_enabled": section_blacklist_enabled,
+                    "device": device,
+                    "empty_cache_interval": empty_cache_interval,
+                    "mem_log_interval": mem_log_interval,
+                    "padding_strategy": None,
+                    "truncation": None,
+                    "model_dtype": None,
+                    "emb_dtype": None,
+                },
+            )
+        except ImportError:
+            print("未安装 wandb，忽略 wandb 记录；如需开启请 pip install wandb")
+            wb = None
 
     retriever = EmbeddingRetriever(
         model_name=embedding_model,
@@ -351,12 +496,207 @@ def main() -> None:
         use_inference_mode=use_inference_mode,
         mem_log_interval=mem_log_interval,
     )
+    # 获取模型 dtype
+    model_dtype = _get_model_dtype(retriever.model)
+    if wb and model_dtype:
+        try:
+            wb.config.update({"model_dtype": model_dtype}, allow_val_change=True)
+        except Exception:
+            pass
 
-    print(f"编码 {len(chunk_texts)} 个 chunks ...")
-    chunk_embs = retriever.encode_chunks(chunk_texts)
+    # 准备 tokenizer 长度统计函数（仅在日志需要时启用）
+    log_token_length = bool(wb and mem_log_interval and wandb_log_interval)
+    if log_token_length and hasattr(retriever.model, "tokenizer"):
+        tokenizer = retriever.model.tokenizer
+
+        def token_length_fn(text_batch: Sequence[str]) -> Sequence[int]:
+            try:
+                encoded = tokenizer(
+                    list(text_batch),
+                    padding=False,
+                    truncation=False,
+                    return_length=True,
+                )
+                lengths = encoded.get("length") or encoded.get("len")
+                if lengths is None:
+                    # 回退：尝试 input_ids 长度
+                    if "input_ids" in encoded:
+                        return [len(ids) for ids in encoded["input_ids"]]
+                    return []
+                return lengths
+            except Exception:
+                return []
+    else:
+        token_length_fn = None
+
+    # 打印关键配置，便于确认运行口径
+    print(
+        "[Config] "
+        f"model={embedding_model}, device={device}, model_dtype={model_dtype}, "
+        f"batch_size={batch_size}, max_seq_length={max_seq_length}, normalize={normalize}, "
+        f"precision_mode={precision_mode}, restrict_to_query_pdf={restrict_to_query_pdf}, "
+        f"section_blacklist_enabled={section_blacklist_enabled}, "
+        f"mem_log_interval={mem_log_interval}, wandb_log_interval={wandb_log_interval}, "
+        f"empty_cache_interval={empty_cache_interval}, model_tag={model_tag}"
+    )
+
+    # 全局进度条（按 batch 计数）
+    total_batches_chunks = sum(ceil(len(v["texts"]) / batch_size) for v in per_pdf_chunks.values())
+    total_batches_queries = ceil(len(queries) / batch_size) if queries else 0
+    global_pbar = tqdm(
+        total=total_batches_chunks + total_batches_queries,
+        desc="global encode",
+        unit="batch",
+        leave=True,
+    )
+
+    # 按 PDF 处理，复用/落盘缓存
+    chunk_embs_list: List[np.ndarray] = []
+    chunk_metas: List[Dict[str, Any]] = []
+    chunks_by_pdf: Dict[str, List[int]] = defaultdict(list)
+    cache_hits: List[str] = []
+    cache_miss: List[str] = []
+    cache_recomputed: List[str] = []
+    emb_dtype_logged = False
+
+    for stem, payload in per_pdf_chunks.items():
+        texts = payload["texts"]
+        metas = payload["metas"]
+        if not texts:
+            continue
+        chunk_ids = [m.get("chunk_id") or f"idx_{i}" for i, m in enumerate(metas)]
+        chunk_hash = _compute_chunk_hash(chunk_ids, texts)
+        npz_path = cache_dir / f"{stem}.npz"
+        sidecar_path = cache_dir / f"{stem}.json"
+
+        emb_array: np.ndarray | None = None
+        use_cache = False
+        if npz_path.exists() and sidecar_path.exists():
+            try:
+                sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+                emb_loaded = np.load(npz_path)
+                emb_mat = emb_loaded["embeddings"]
+                cache_valid = (
+                    sidecar.get("model_name") == embedding_model
+                    and sidecar.get("normalize_embeddings") == normalize
+                    and sidecar.get("max_seq_length") == (max_seq_length or None)
+                    and sidecar.get("precision_mode", "auto") == precision_mode
+                    and sidecar.get("section_blacklist_enabled") == section_blacklist_enabled
+                    and sidecar.get("chunk_hash") == chunk_hash
+                    and sidecar.get("chunk_count") == len(chunk_ids)
+                    and emb_mat.shape[0] == len(chunk_ids)
+                )
+                if cache_valid:
+                    emb_array = emb_mat
+                    use_cache = True
+                    cache_hits.append(stem)
+                    if global_pbar:
+                        try:
+                            global_pbar.update(ceil(len(texts) / batch_size))
+                        except Exception:
+                            pass
+                else:
+                    cache_recomputed.append(stem)
+            except Exception:
+                cache_recomputed.append(stem)
+        else:
+            cache_miss.append(stem)
+
+        if emb_array is None:
+            start_ts = time.time()
+            log_fn = None
+            if wb and mem_log_interval and wandb_log_interval:
+                # 依赖 EmbeddingRetriever 内部 mem_log_interval 触发
+                def log_fn(metrics: Dict[str, float]) -> None:
+                    if metrics.get("batch_idx", 0) % wandb_log_interval == 0:
+                        wb.log({"phase": "chunk_encode", **metrics})
+
+            emb_array = retriever.encode_chunks(
+                texts,
+                log_fn=log_fn,
+                token_length_fn=token_length_fn,
+                progress_cb=lambda n: global_pbar.update(n),
+            )
+            elapsed = time.time() - start_ts
+            # 持久化缓存
+            np.savez(npz_path, embeddings=emb_array)
+            sidecar = {
+                "model_name": embedding_model,
+                "normalize_embeddings": normalize,
+                "max_seq_length": max_seq_length or None,
+                "precision_mode": precision_mode,
+                "dtype": str(emb_array.dtype),
+                "section_blacklist_enabled": section_blacklist_enabled,
+                "embedding_dim": int(emb_array.shape[1]) if emb_array.size else 0,
+                "chunk_count": len(chunk_ids),
+                "chunk_ids": chunk_ids,
+                "chunk_hash": chunk_hash,
+                "created_at": datetime.utcnow().isoformat() + "Z",
+            }
+            sidecar_path.write_text(json.dumps(sidecar, ensure_ascii=False, indent=2), encoding="utf-8")
+            if wb:
+                metrics = _collect_mem_metrics()
+                wb.log(
+                    {
+                        "phase": "chunk_encode",
+                        "pdf_stem": stem,
+                        "chunk_count": len(chunk_ids),
+                        "chunk_encode_sec": elapsed,
+                        "chunk_samples_per_sec": len(chunk_ids) / elapsed if elapsed > 0 else None,
+                        **metrics,
+                    }
+                )
+        if wb and not emb_dtype_logged and emb_array is not None:
+            try:
+                wb.config.update({"emb_dtype": str(emb_array.dtype)}, allow_val_change=True)
+            except Exception:
+                pass
+            emb_dtype_logged = True
+
+        start_idx = len(chunk_metas)
+        chunk_embs_list.append(emb_array)
+        chunk_metas.extend(metas)
+        chunks_by_pdf[str(stem)] = list(range(start_idx, start_idx + len(metas)))
+
+    if cache_hits or cache_miss or cache_recomputed:
+        print(
+            f"[缓存] 命中: {len(cache_hits)}, 缺失: {len(cache_miss)}, 失配重算: {len(cache_recomputed)}"
+        )
+        if cache_recomputed:
+            print(f"[缓存] 失配重算 PDFs: {cache_recomputed[:5]}{' ...' if len(cache_recomputed) > 5 else ''}")
+    if not chunk_metas:
+        print("未能加载任何 chunk embedding，退出。")
+        return
+
+    chunk_embs = np.vstack(chunk_embs_list)
+
     print(f"编码 {len(queries)} 个 queries ...")
     query_texts = [q["query"] for q in queries]
-    query_embs = retriever.encode_queries(query_texts)
+    q_start = time.time()
+    log_fn_q = None
+    if wb and mem_log_interval and wandb_log_interval:
+        def log_fn_q(metrics: Dict[str, float]) -> None:
+            if metrics.get("batch_idx", 0) % wandb_log_interval == 0:
+                wb.log({"phase": "query_encode", **metrics})
+
+    query_embs = retriever.encode_queries(
+        query_texts,
+        log_fn=log_fn_q,
+        token_length_fn=token_length_fn,
+        progress_cb=lambda n: global_pbar.update(n),
+    )
+    q_elapsed = time.time() - q_start
+    if wb:
+        metrics = _collect_mem_metrics()
+        wb.log(
+            {
+                "phase": "query_encode",
+                "query_count": len(query_texts),
+                "query_encode_sec": q_elapsed,
+                "query_samples_per_sec": len(query_texts) / q_elapsed if q_elapsed > 0 else None,
+                **metrics,
+            }
+        )
 
     print(f"检索 Top-{top_k} ...")
     if restrict_to_query_pdf:
@@ -449,15 +789,33 @@ def main() -> None:
     score_pool = [hit["score"] for hits in all_hits for hit in hits]
     print(f"总计候选: {len(score_pool)}")
     _print_distribution(score_pool)
+    if wb:
+        pct = _calc_percentiles(score_pool)
+        wb.log(
+            {
+                "phase": "summary",
+                "queries": len(queries),
+                "total_chunks": len(chunk_metas),
+                "total_hits": len(score_pool),
+                "score_p50": pct.get("p50"),
+                "score_p90": pct.get("p90"),
+                "score_p99": pct.get("p99"),
+                "score_min": min(score_pool) if score_pool else None,
+                "score_max": max(score_pool) if score_pool else None,
+                "cache_hits": len(cache_hits),
+                "cache_miss": len(cache_miss),
+                "cache_recomputed": len(cache_recomputed),
+            }
+        )
 
     if args.save_checkpoint:
         # 只记录本次实际使用的 chunk 文件
         chunk_files_used = [chunk_dir / f"{stem}_chunks.json" for stem in used_pdfs if (chunk_dir / f"{stem}_chunks.json").exists()]
-        checkpoint_path = (
-            Path(args.checkpoint_path)
-            if args.checkpoint_path
-            else Path(f"data/output/checkpoints/{args.stage}_step_3.json")
-        )
+        if args.checkpoint_path:
+            checkpoint_path = Path(args.checkpoint_path)
+        else:
+            ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            checkpoint_path = Path(f"data/output/checkpoints/{args.stage}_step_3_{ts}.json")
         params = {
             "embedding_model": embedding_model,
             "top_k": top_k,
@@ -467,9 +825,11 @@ def main() -> None:
             "section_blacklist_enabled": section_blacklist_enabled,
             "output_format": args.output_format,
             "include_answers": args.include_answers,
+            "model_tag": model_tag,
         }
         summary = {
             "queries": len(queries),
+            "total_chunks": len(chunk_metas),
             "total_hits": len(score_pool),
             "missing_chunk_files": len(missing_chunks),
             "dropped_by_blacklist": dropped_by_blacklist,
@@ -477,6 +837,9 @@ def main() -> None:
             "score_percentiles": _calc_percentiles(score_pool),
             "score_min": min(score_pool) if score_pool else None,
             "score_max": max(score_pool) if score_pool else None,
+            "cache_hits": cache_hits,
+            "cache_miss": cache_miss,
+            "cache_recomputed": cache_recomputed,
         }
         _save_checkpoint(
             checkpoint_path,
@@ -486,8 +849,13 @@ def main() -> None:
             answers=Path(data_cfg["answers"]),
             output_file=output_path,
             params=params,
-            summary=summary,
+            summary={**summary, "original_command": original_command, "cwd": str(Path.cwd())},
         )
+
+    try:
+        global_pbar.close()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

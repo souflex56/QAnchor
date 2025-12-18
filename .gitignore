@@ -13,8 +13,12 @@ Reference/
 # 项目记忆库目录（44KB）
 memory-bank/
 
-#src/
+# wandb 目录
+wandb/
 #tests/
+# output 目录 embeddings
+data/output/embeddings/
+
 
 # ============================================
 # Python 相关

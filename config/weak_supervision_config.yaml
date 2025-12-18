@@ -32,7 +32,7 @@ retrieval:
   embedding_model: "Qwen/Qwen3-Embedding-0.6B"  # 可切换为 "bge-m3"
   model_backend: "sentence-transformers"
   top_k: 30
-  batch_size: 4
+  batch_size: 16
   max_seq_length: 512         # 限制序列长度，降低显存占用
   empty_cache_interval: 5     # 每N个batch清理一次缓存，决定是否周期性调用 gc.collect() 及 mps/cuda empty_cache()，降低峰值。
   precision_mode: "auto"      # auto | fp16 | fp32；auto 非 CPU 默认尝试半精度以省显存。

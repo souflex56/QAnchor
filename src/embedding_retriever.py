@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import gc
 from contextlib import nullcontext
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Callable
+import time
 
 import numpy as np
 import torch
@@ -61,24 +62,38 @@ class EmbeddingRetriever:
             # precision_mode=fp32 时显式不做 half
         self.model.eval()
 
-    def _log_memory(self, prefix: str) -> None:
-        """可选的内存日志，便于观察显存压力。"""
+    def _log_memory(self, prefix: str) -> Dict[str, float]:
+        """可选的内存日志，便于观察显存压力。返回采集的指标字典。"""
+        metrics: Dict[str, float] = {}
         try:
             vm = psutil.virtual_memory()
-            print(f"{prefix} RAM used={vm.used/1e9:.2f}G avail={vm.available/1e9:.2f}G")
+            metrics["ram_used_gb"] = vm.used / 1e9
+            metrics["ram_avail_gb"] = vm.available / 1e9
+            print(f"{prefix} RAM used={metrics['ram_used_gb']:.2f}G avail={metrics['ram_avail_gb']:.2f}G")
             if torch.backends.mps.is_available():
                 cur = torch.mps.current_allocated_memory() / 1024**3
                 driver = torch.mps.driver_allocated_memory() / 1024**3
+                metrics["mps_allocated_gb"] = cur
+                metrics["mps_driver_gb"] = driver
                 print(f"{prefix} MPS current={cur:.2f}GiB driver={driver:.2f}GiB")
             if torch.cuda.is_available():
                 cur = torch.cuda.memory_allocated() / 1024**3
                 reserved = torch.cuda.memory_reserved() / 1024**3
+                metrics["cuda_allocated_gb"] = cur
+                metrics["cuda_reserved_gb"] = reserved
                 print(f"{prefix} CUDA allocated={cur:.2f}GiB reserved={reserved:.2f}GiB")
         except Exception:
             # 日志失败不影响主流程
-            pass
+            return metrics
+        return metrics
 
-    def _encode(self, texts: Sequence[str]) -> np.ndarray:
+    def _encode(
+        self,
+        texts: Sequence[str],
+        log_fn: Callable[[Dict[str, float]], None] | None = None,
+        token_length_fn: Callable[[Sequence[str]], Sequence[int]] | None = None,
+        progress_cb: Callable[[int], None] | None = None,
+    ) -> np.ndarray:
         texts = list(texts)
         embeddings: List[np.ndarray] = []
         try:
@@ -88,6 +103,14 @@ class EmbeddingRetriever:
                 unit="batch",
             ):
                 batch = texts[start : start + self.batch_size]
+                log_this_batch = bool(self.mem_log_interval) and ((start // self.batch_size) % self.mem_log_interval == 0)
+                batch_start = time.time() if log_this_batch else None
+                token_lengths: Sequence[int] | None = None
+                if log_this_batch and token_length_fn:
+                    try:
+                        token_lengths = token_length_fn(batch)
+                    except Exception:
+                        token_lengths = None
                 ctx = torch.inference_mode() if self.use_inference_mode else nullcontext()
                 with ctx:
                     emb = self.model.encode(
@@ -101,6 +124,11 @@ class EmbeddingRetriever:
 
                 # 周期性清理缓存，降低 MPS/CUDA 内存压力
                 step_idx = start // self.batch_size
+                if progress_cb:
+                    try:
+                        progress_cb(1)
+                    except Exception:
+                        pass
                 if self.enable_empty_cache and step_idx % self.empty_cache_interval == 0:
                     gc.collect()
                     if torch.backends.mps.is_available():
@@ -116,7 +144,27 @@ class EmbeddingRetriever:
 
                 # 可选：打印内存使用
                 if self.mem_log_interval and step_idx % self.mem_log_interval == 0:
-                    self._log_memory(prefix=f"[batch {step_idx}]")
+                    # 批次耗时与吞吐
+                    batch_time_s = None
+                    if batch_start is not None:
+                        batch_time_s = time.time() - batch_start
+                    metrics = self._log_memory(prefix=f"[batch {step_idx}]")
+                    metrics = {"batch_idx": step_idx, **metrics}
+                    if batch_time_s:
+                        metrics["batch_time_s"] = batch_time_s
+                        if batch_time_s > 0:
+                            metrics["items_per_s"] = len(batch) / batch_time_s
+                    if token_lengths:
+                        try:
+                            total_tokens = sum(token_lengths)
+                            metrics["max_tokens_in_batch"] = max(token_lengths)
+                            metrics["mean_tokens_in_batch"] = total_tokens / len(token_lengths)
+                            if batch_time_s and batch_time_s > 0:
+                                metrics["tokens_per_s"] = total_tokens / batch_time_s
+                        except Exception:
+                            pass
+                    if log_fn:
+                        log_fn(metrics)
         except Exception as e:
             print(f"编码失败（共 {len(texts)} 条）：{e}")
             raise
@@ -125,13 +173,25 @@ class EmbeddingRetriever:
             return np.zeros((0, 0))
         return np.vstack(embeddings)
 
-    def encode_queries(self, queries: Sequence[str]) -> np.ndarray:
+    def encode_queries(
+        self,
+        queries: Sequence[str],
+        log_fn: Callable[[Dict[str, float]], None] | None = None,
+        token_length_fn: Callable[[Sequence[str]], Sequence[int]] | None = None,
+        progress_cb: Callable[[int], None] | None = None,
+    ) -> np.ndarray:
         """批量编码 query 文本。"""
-        return self._encode(queries)
+        return self._encode(queries, log_fn=log_fn, token_length_fn=token_length_fn, progress_cb=progress_cb)
 
-    def encode_chunks(self, chunk_texts: Sequence[str]) -> np.ndarray:
+    def encode_chunks(
+        self,
+        chunk_texts: Sequence[str],
+        log_fn: Callable[[Dict[str, float]], None] | None = None,
+        token_length_fn: Callable[[Sequence[str]], Sequence[int]] | None = None,
+        progress_cb: Callable[[int], None] | None = None,
+    ) -> np.ndarray:
         """批量编码 chunk 文本。"""
-        return self._encode(chunk_texts)
+        return self._encode(chunk_texts, log_fn=log_fn, token_length_fn=token_length_fn, progress_cb=progress_cb)
 
     def retrieve_top_k(
         self,
