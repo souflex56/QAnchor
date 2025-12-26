@@ -17,21 +17,20 @@ stages:
   stage0:
     pdf_count_cap: 20   # 安全上限，防止长尾 PDF 无限累加
     qa_count: 60        # 以 QA 数为主目标，优先多 QA PDF 直到接近该值
-    description: "内部调试，优先选多QA的PDF"
+    description: "内部调试，优先选多QA的PDF（已完成）"
   stage1:
-    pdf_count_cap: 40
-    qa_count: 100
-  stage2:
-    pdf_count_cap: 70
+    pdf_count_cap: 300
     qa_count: 300
-  stage3:
-    pdf_count_cap: 130
-    qa_count: 800
+    description: "Stage1: 快速验证（300 QA）"
+  stage2:
+    pdf_count_cap: 3000         # 足够覆盖 2600+ QA，避免提前截断
+    qa_count: 2600
+    description: "Stage2: 全量训练（2600 QA）"
 
 retrieval:
   embedding_model: "Qwen/Qwen3-Embedding-0.6B"  # 可切换为 "bge-m3"
   model_backend: "sentence-transformers"
-  top_k: 30
+  top_k: 50
   batch_size: 16
   max_seq_length: 512         # 限制序列长度，降低显存占用
   empty_cache_interval: 5     # 每N个batch清理一次缓存，决定是否周期性调用 gc.collect() 及 mps/cuda empty_cache()，降低峰值。
@@ -54,6 +53,17 @@ retrieval:
   chunk_level: "child"         # 以子块为检索主键
   parent_concat: false         # embedding 不拼接 parent；parent 仅供精筛/生成时取上下文
 
+  # Embedding 缓存（Stage1 用签名模式，Stage2 可升级 hash）
+  embedding_cache:
+    enabled: true
+    mode: "signature"          # signature | hash
+    signature_fields:
+      - model_name
+      - normalize_embeddings
+      - max_seq_length
+      - precision_mode
+      - section_blacklist_enabled
+
   # 3a-0: Gold 标注与阈值校准
   gold_annotation:
     enabled: true                                # Stage0 必须先标注
@@ -67,12 +77,12 @@ retrieval:
 
   # 3a-1: BM25
   bm25:
-    enabled: false                               # Stage0 可选，Stage1+ 建议开启
+    enabled: true                                # Stage1 必须开启
     top_k: 50
 
   # 3a-2: Hybrid
   hybrid:
-    enabled: false                               # 3a-1 完成后开启
+    enabled: true                                # Stage1 必须开启
     embedding_weight: 0.7
     bm25_weight: 0.3
     fusion_method: "rrf"                         # "rrf" | "weighted_sum" | "max"

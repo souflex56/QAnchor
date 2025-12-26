@@ -7,10 +7,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import statistics
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -23,8 +24,6 @@ from src.data_loader import select_pdf_subset  # noqa: E402
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
-    import json
-
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -95,6 +94,7 @@ def analyze_chunk_file(path: Path) -> Dict[str, Any]:
         "page_cov_ratio": page_cov_ratio,
         "page_gaps": gap_preview,
         "section_path_coverage": f"{section_non_empty}/{len(parents)+len(children)}",
+        "section_path_ratio": (section_non_empty / (len(parents) + len(children))) if parents or children else None,
         "section_level_filled": section_level_non_empty,
         "parents_with_children": parents_with_children,
         "orphan_children": orphan_children,
@@ -107,6 +107,16 @@ def main() -> None:
     parser.add_argument("--stage", default="stage0", help="阶段名称，默认 stage0")
     parser.add_argument("--config", default="config/weak_supervision_config.yaml", help="主配置文件")
     parser.add_argument("--sample", type=int, default=5, help="抽查文件数，默认 5")
+    parser.add_argument("--full", action="store_true", help="扫描所有 chunk 文件（生成问题清单时推荐开启）")
+    parser.add_argument(
+        "--problematic-output",
+        type=str,
+        default=None,
+        help="可选：输出问题 PDF 清单 JSON 路径（如 data/output/quality/problematic_pdfs_stage1.json）",
+    )
+    parser.add_argument("--page-cov-threshold", type=float, default=0.98, help="页覆盖率阈值，低于则判问题")
+    parser.add_argument("--section-path-threshold", type=float, default=0.8, help="section_path 填充率阈值，低于则判问题")
+    parser.add_argument("--allow-orphan", type=int, default=0, help="允许的孤儿 child 上限，超过则判问题")
     args = parser.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
@@ -119,21 +129,39 @@ def main() -> None:
         stage_config=cfg["stages"],
     )
 
-    expected = []
+    expected: List[Path] = []
     for rec in subset["records"]:
         stem = Path(rec["pdf_path"]).stem
         f = chunk_dir / f"{stem}_chunks.json"
         if f.exists():
             expected.append(f)
-    sample_files = expected[: args.sample]
+
+    sample_files: List[Path]
+    if args.full:
+        sample_files = expected
+    else:
+        sample_files = expected[: args.sample]
 
     if not sample_files:
         print("未找到可抽查的 chunk 文件，请先运行 01_batch_chunking.py")
         return
 
     print(f"[Stage: {args.stage}] 抽查 {len(sample_files)} 份 chunk：")
+    problematic: List[Dict[str, Any]] = []
     for f in sample_files:
         report = analyze_chunk_file(f)
+
+        # 判定是否问题文件
+        reasons: List[str] = []
+        if report["page_cov_ratio"] is not None and report["page_cov_ratio"] < args.page_cov_threshold:
+            reasons.append(f"page_cov {report['page_cov_ratio']}")
+        if report["section_path_ratio"] is not None and report["section_path_ratio"] < args.section_path_threshold:
+            reasons.append(f"section_path_ratio {report['section_path_ratio']}")
+        if report["orphan_children"] > args.allow_orphan:
+            reasons.append(f"orphan_children {report['orphan_children']}")
+        if reasons and args.problematic_output:
+            problematic.append({"pdf_stem": Path(report["file"]).stem.replace("_chunks", ""), "reasons": reasons})
+
         print(f"- {report['file']}")
         print(f"  parents/children: {report['parents']} / {report['children']}")
         cov_ratio = f"{report['page_cov_ratio']*100:.1f}%" if report['page_cov_ratio'] is not None else "未知"
@@ -143,7 +171,25 @@ def main() -> None:
         if report["length_stats"]:
             s = report['length_stats']
             print(f"  child length chars (min/p50/p90/max): {s['min']}/{s['p50']}/{s['p90']}/{s['max']}")
+        if reasons:
+            print(f"  [标记为问题文件] reasons: {reasons}")
         print("")
+
+    # 写问题清单
+    if args.problematic_output:
+        out_path = Path(args.problematic_output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "stage": args.stage,
+            "thresholds": {
+                "page_cov": args.page_cov_threshold,
+                "section_path_ratio": args.section_path_threshold,
+                "allow_orphan": args.allow_orphan,
+            },
+            "problematic": problematic,
+        }
+        out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[done] 写入问题清单: {out_path} (count={len(problematic)})")
 
 
 if __name__ == "__main__":

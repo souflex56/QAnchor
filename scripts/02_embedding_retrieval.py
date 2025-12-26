@@ -340,6 +340,12 @@ def main() -> None:
         default=None,
         help="编码阶段每多少个 batch 记录一次内存信息到 wandb（依赖 mem_log_interval）",
     )
+    parser.add_argument(
+        "--exclude-pdfs",
+        type=str,
+        default=None,
+        help="可选：按行列出 pdf_stem 的文件路径（txt 或包含 problematic[].pdf_stem 的 JSON），匹配的 PDF 将被跳过",
+    )
     args = parser.parse_args()
     original_command = " ".join(sys.argv)
 
@@ -366,6 +372,36 @@ def main() -> None:
         stage_config=cfg.get("stages"),
     )
     pdf_stems = [Path(rec["pdf_path"]).stem for rec in subset["records"]]
+
+    # 可选：过滤问题 PDF
+    if args.exclude_pdfs:
+        exclude_path = Path(args.exclude_pdfs)
+        exclude_stems: List[str] = []
+        if exclude_path.suffix.lower() in {".json", ".jsonl"}:
+            try:
+                payload = json.loads(exclude_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict) and "problematic" in payload:
+                    exclude_stems = [
+                        item.get("pdf_stem")
+                        for item in payload.get("problematic", [])
+                        if isinstance(item, dict) and item.get("pdf_stem")
+                    ]
+                elif isinstance(payload, list):
+                    exclude_stems = [
+                        item.get("pdf_stem") for item in payload if isinstance(item, dict) and item.get("pdf_stem")
+                    ]
+            except Exception:
+                exclude_stems = []
+        if not exclude_stems:
+            # 兼容 txt，每行一个 pdf_stem
+            exclude_stems = [line.strip() for line in exclude_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if exclude_stems:
+            before = len(pdf_stems)
+            exclude_set = set(exclude_stems)
+            pdf_stems = [s for s in pdf_stems if s not in exclude_set]
+            print(f"根据 exclude 列表过滤 PDF：{before} -> {len(pdf_stems)}")
+        else:
+            print(f"[警告] 未能从 {exclude_path} 读取有效的 pdf_stem，未应用过滤")
     print(f"[Stage: {args.stage}] 选中 PDF 数: {len(pdf_stems)}")
 
     # 加载 QA 与答案

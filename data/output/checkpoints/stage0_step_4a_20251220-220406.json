@@ -1,0 +1,32 @@
+{
+  "stage": "stage0",
+  "step": "4a",
+  "completed": true,
+  "completed_at": "2025-12-20T22:04:06.883778+08:00",
+  "input_files": {
+    "retrieval_template": "data/output/retrieval/embedding_stage0_12181300.jsonl",
+    "answers": "finglm_data_store/finglm_master.jsonl",
+    "chunks": "data/output/chunks"
+  },
+  "output_files": {
+    "auto_label": "data/output/annotations/auto_label_stage0_score56rank5.jsonl"
+  },
+  "params": {
+    "min_candidate_score": 0.56,
+    "max_candidate_rank": 5,
+    "stage": "stage0"
+  },
+  "stats": {
+    "total_queries": 60,
+    "total_hits": 1800,
+    "label_counts": {
+      "positive_auto": 153,
+      "candidate": 1231,
+      "negative_auto": 416
+    },
+    "missing_answer": 0,
+    "missing_chunk": 0,
+    "match_rate": 0.5666666666666667,
+    "avg_positive_per_query": 2.55
+  }
+}
