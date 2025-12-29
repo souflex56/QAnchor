@@ -115,7 +115,8 @@ def main() -> None:
         help="可选：输出问题 PDF 清单 JSON 路径（如 data/output/quality/problematic_pdfs_stage1.json）",
     )
     parser.add_argument("--page-cov-threshold", type=float, default=0.98, help="页覆盖率阈值，低于则判问题")
-    parser.add_argument("--section-path-threshold", type=float, default=0.8, help="section_path 填充率阈值，低于则判问题")
+    # 0.75 是根据 stage1 的实际情况调整的
+    parser.add_argument("--section-path-threshold", type=float, default=0.75, help="section_path 填充率阈值，低于则判问题")
     parser.add_argument("--allow-orphan", type=int, default=0, help="允许的孤儿 child 上限，超过则判问题")
     args = parser.parse_args()
 
