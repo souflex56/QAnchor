@@ -1,0 +1,10 @@
+{
+  "stage": "stage1",
+  "step": "4b_chunking",
+  "completed_at": "2025-01-05T00:00:00Z",
+  "chunks_count": 126,
+  "pdf_selected": 126,
+  "qa_target": 300,
+  "source": "manual checkpoint after running scripts/01_batch_chunking.py",
+  "notes": "Stage1 chunking finished; checklist should filter problematic_pdfs_stage1.json for downstream steps."
+}
