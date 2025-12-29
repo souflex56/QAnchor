@@ -1,6 +1,7 @@
 wandb
 weave
-
+jieba
+rank-bm25
 
 
 

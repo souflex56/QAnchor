@@ -1,0 +1,35 @@
+{
+  "stage": "stage1",
+  "step": "5b",
+  "completed_at": "2025-12-29T18:25:45.307237+08:00",
+  "params": {
+    "top_k_train": 50,
+    "top_k_eval": 20,
+    "rrf_k": 60,
+    "missing_rank": 9999
+  },
+  "input_files": {
+    "qa_mapping": "finglm_data_store/type1_1co1yr_pdf_map.csv",
+    "answers": "finglm_data_store/finglm_master.jsonl",
+    "summary": "finglm_data_store/type1_1co1yr_pdf_summary.csv",
+    "chunk_dir": "data/output/chunks",
+    "exclude_pdfs": "data/output/quality/problematic_pdfs_stage1.json"
+  },
+  "stats": {
+    "query_count": 300,
+    "pdf_count": 126,
+    "cache_hits": 126,
+    "cache_miss": 0,
+    "raw_query_count": 2613,
+    "filtered_query_count": 300,
+    "bm25_pdfs_indexed": 126
+  },
+  "output_files": {
+    "embedding_top50": "data/output/retrieval/embedding_top50_stage1.jsonl",
+    "bm25_top50": "data/output/retrieval/bm25_top50_stage1.jsonl",
+    "hybrid_top50": "data/output/retrieval/hybrid_rrf_top50_stage1.jsonl",
+    "embedding_top20": "data/output/retrieval/embedding_top20_stage1.jsonl",
+    "bm25_top20": "data/output/retrieval/bm25_top20_stage1.jsonl",
+    "hybrid_top20": "data/output/retrieval/hybrid_rrf_top20_stage1.jsonl"
+  }
+}

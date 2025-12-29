@@ -86,6 +86,8 @@ retrieval:
     embedding_weight: 0.7
     bm25_weight: 0.3
     fusion_method: "rrf"                         # "rrf" | "weighted_sum" | "max"
+    rrf_k: 60
+    missing_rank: 9999
 
 teacher:
   model: "deepseek-chat"
