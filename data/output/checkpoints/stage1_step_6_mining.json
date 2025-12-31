@@ -1,0 +1,39 @@
+{
+  "stage": "stage1",
+  "step": 6,
+  "completed_at": "2025-12-30 16:57:25 UTC+08:00",
+  "input_files": {
+    "retrieval": "/Users/skybay7/CloudStorage/BaiduYun/LLM-Prj/QAnchor/data/output/retrieval/hybrid_rrf_top50_stage1.jsonl",
+    "master": "/Users/skybay7/CloudStorage/BaiduYun/LLM-Prj/QAnchor/finglm_data_store/finglm_master.jsonl",
+    "chunk_dir": "/Users/skybay7/CloudStorage/BaiduYun/LLM-Prj/QAnchor/data/output/chunks"
+  },
+  "output_files": {
+    "triplets": "/Users/skybay7/CloudStorage/BaiduYun/LLM-Prj/QAnchor/data/output/mining/mined_triplets_stage1.jsonl",
+    "stats": "/Users/skybay7/CloudStorage/BaiduYun/LLM-Prj/QAnchor/data/output/mining/mining_stats_stage1.json"
+  },
+  "params": {
+    "neg_ratio": 3,
+    "confidence_threshold": 0.5
+  },
+  "stats": {
+    "total_queries": 300,
+    "queries_with_pos": 244,
+    "pos_found_rate": 0.8133,
+    "total_triplets": 1871,
+    "total_positives": 1871,
+    "total_negatives": 3069,
+    "avg_pos_rank": 21.92,
+    "avg_best_pos_rank": 9.79,
+    "min_pos_rank": 1,
+    "max_pos_rank": 50,
+    "skipped_no_master": 0,
+    "skipped_not_type1": 0,
+    "skipped_no_key_values": 0,
+    "skipped_no_hits": 0,
+    "skipped_no_chunk": 0,
+    "skipped_chunk_ids_sample": [],
+    "confidence_threshold": 0.5,
+    "neg_ratio": 3,
+    "triplet_format": "query-pos-negatives"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "total_queries": 300,
+  "queries_with_pos": 244,
+  "pos_found_rate": 0.8133,
+  "total_triplets": 1871,
+  "total_positives": 1871,
+  "total_negatives": 3069,
+  "avg_pos_rank": 21.92,
+  "avg_best_pos_rank": 9.79,
+  "min_pos_rank": 1,
+  "max_pos_rank": 50,
+  "skipped_no_master": 0,
+  "skipped_not_type1": 0,
+  "skipped_no_key_values": 0,
+  "skipped_no_hits": 0,
+  "skipped_no_chunk": 0,
+  "skipped_chunk_ids_sample": [],
+  "confidence_threshold": 0.5,
+  "neg_ratio": 3,
+  "triplet_format": "query-pos-negatives"
+}
