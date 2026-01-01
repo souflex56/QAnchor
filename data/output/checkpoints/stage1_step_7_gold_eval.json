@@ -1,0 +1,14 @@
+{
+  "stage": "stage1",
+  "step": 7,
+  "completed_at": "2026-01-01T22:14:41.461958",
+  "input_file": "data/output/retrieval/hybrid_rrf_top20_stage1.jsonl",
+  "chunks_dir": "data/output/chunks",
+  "output_file": "data/output/annotations/gold_eval_50_template.jsonl",
+  "blacklist_file": "config/eval_blacklist.json",
+  "sample_size_requested": 50,
+  "selected_queries": 50,
+  "total_queries": 300,
+  "missing_chunks": [],
+  "blacklist_mode": "replace"
+}
