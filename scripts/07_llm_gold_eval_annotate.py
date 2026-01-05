@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from urllib import error as urlerror
@@ -55,7 +57,24 @@ def http_post_json(url: str, payload: Dict[str, Any], headers: Optional[Dict[str
             raw = resp.read().decode("utf-8")
     except urlerror.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"HTTP {exc.code} for {url}: {body}") from exc
+        error_msg = f"HTTP {exc.code} for {url}"
+        if body:
+            error_msg += f": {body}"
+        if exc.code == 502:
+            error_msg += "\n\n诊断建议："
+            error_msg += "\n1. 检查 Ollama 服务是否运行: ollama serve 或检查服务状态"
+            error_msg += "\n2. 确认模型是否存在: ollama list"
+            error_msg += "\n3. 如果模型不存在，请先下载: ollama pull <model_name>"
+            error_msg += "\n4. 检查 Ollama 是否在正确的端口运行（默认 11434）"
+        raise RuntimeError(error_msg) from exc
+    except urlerror.URLError as exc:
+        error_msg = f"无法连接到 {url}: {exc.reason}"
+        if "localhost" in url or "127.0.0.1" in url:
+            error_msg += "\n\n诊断建议："
+            error_msg += "\n1. 确认 Ollama 服务是否已启动"
+            error_msg += "\n2. 检查服务是否在正确的地址和端口运行"
+            error_msg += "\n3. 尝试运行: ollama serve"
+        raise RuntimeError(error_msg) from exc
     return json.loads(raw)
 
 
@@ -70,6 +89,53 @@ class OllamaClient(LLMClient):
         self.model = model
         self.temperature = temperature
         self.timeout = timeout
+
+    def test_connection(self) -> None:
+        """Test if Ollama service is accessible and model exists."""
+        try:
+            # Test if Ollama service is running by making a simple request
+            url = f"{self.base_url}/api/tags"
+            req = urlrequest.Request(url, method="GET")
+            with urlrequest.urlopen(req, timeout=5) as resp:
+                raw = resp.read().decode("utf-8")
+                resp_data = json.loads(raw)
+            
+            if not isinstance(resp_data, dict) or "models" not in resp_data:
+                raise RuntimeError("无法获取模型列表，Ollama 服务可能异常")
+            
+            # Check if model exists
+            available_models = [m.get("name", "") for m in resp_data.get("models", [])]
+            model_found = any(self.model in name or name == self.model for name in available_models)
+            if not model_found:
+                print(f"警告: 模型 '{self.model}' 可能不存在。")
+                if available_models:
+                    print(f"可用模型: {', '.join(available_models[:5])}{'...' if len(available_models) > 5 else ''}")
+                print(f"提示: 如果模型不存在，请运行: ollama pull {self.model}")
+            
+            # Check GPU/compute resources
+            try:
+                ps_url = f"{self.base_url}/api/ps"
+                ps_req = urlrequest.Request(ps_url, method="GET")
+                with urlrequest.urlopen(ps_req, timeout=3) as ps_resp:
+                    ps_raw = ps_resp.read().decode("utf-8")
+                    ps_data = json.loads(ps_raw)
+                    if isinstance(ps_data, dict) and "models" in ps_data:
+                        for model_info in ps_data.get("models", []):
+                            if isinstance(model_info, dict):
+                                compute_info = model_info.get("compute", {})
+                                if compute_info:
+                                    compute_type = compute_info.get("type", "unknown")
+                                    print(f"GPU/计算资源: {compute_type}")
+                                    if compute_type == "discrete" or "Metal" in str(compute_info):
+                                        print("  ✓ 正在使用 GPU 加速 (Metal)")
+                                    break
+            except Exception:
+                # Ignore errors in GPU check, it's optional
+                pass
+        except urlerror.URLError as exc:
+            raise RuntimeError(f"无法连接到 Ollama 服务 ({self.base_url}): {exc.reason}\n请确认 Ollama 服务已启动 (运行 'ollama serve' 或检查服务状态)") from exc
+        except Exception as exc:
+            raise RuntimeError(f"测试 Ollama 连接时出错: {exc}") from exc
 
     def chat(self, messages: List[Dict[str, str]]) -> str:
         url = f"{self.base_url}/api/chat"
@@ -173,6 +239,7 @@ def strip_code_fence(text: str) -> str:
 
 
 def extract_json_payload(text: str) -> Any:
+    original_text = text
     text = strip_code_fence(text)
     if text.lower().startswith("json"):
         parts = text.split("\n", 1)
@@ -184,7 +251,14 @@ def extract_json_payload(text: str) -> Any:
             return json.loads(candidate)
         except Exception:
             continue
-    raise ValueError("Failed to parse JSON from model response")
+    # If we get here, show what we tried to parse
+    error_msg = "Failed to parse JSON from model response"
+    if original_text:
+        preview = original_text[:500] if len(original_text) > 500 else original_text
+        error_msg += f"\n\n模型返回的前500字符:\n{preview}"
+        if len(original_text) > 500:
+            error_msg += "\n...(已截断)"
+    raise ValueError(error_msg)
 
 
 def extract_between(text: str, start_char: str, end_char: str) -> Optional[str]:
@@ -241,8 +315,18 @@ def build_prompt(
     lines.append("related: same topic/entity/year but does not fully answer.")
     lines.append("irrelevant: not about the query.")
     lines.append("")
-    lines.append("Return ONLY a JSON array. Each item: {\"index\": <int>, \"label\": \"evidence|related|irrelevant\", \"notes\": \"\"}.")
-    lines.append("Use the same index shown with each candidate. Keep notes empty unless clarification is needed.")
+    lines.append("IMPORTANT: Return ONLY a valid JSON array, no other text. Format:")
+    lines.append("[{\"index\": 0, \"label\": \"evidence\", \"notes\": \"\"}, {\"index\": 1, \"label\": \"related\", \"notes\": \"\"}, ...]")
+    lines.append("")
+    lines.append("CRITICAL Requirements:")
+    lines.append(f"- You MUST return exactly {len(indices)} items in the JSON array (one for each candidate below)")
+    lines.append(f"- The array MUST include indices: {sorted(indices)}")
+    lines.append("- Return a JSON array with one object per candidate")
+    lines.append("- Use the exact index number shown with each candidate (e.g., Candidate 0 -> index: 0)")
+    lines.append("- Label must be exactly one of: \"evidence\", \"related\", or \"irrelevant\"")
+    lines.append("- Keep notes empty string \"\" unless clarification is needed")
+    lines.append("- Do NOT include any explanation, markdown formatting, or text outside the JSON array")
+    lines.append("- Do NOT skip any candidate - you must label ALL candidates shown below")
     lines.append("")
     for idx in indices:
         cand = candidates[idx]
@@ -280,15 +364,22 @@ def label_batch(
         {"role": "user", "content": prompt},
     ]
     last_error: Optional[Exception] = None
+    last_response: Optional[str] = None
     for attempt in range(max_retries + 1):
         try:
             response_text = client.chat(messages)
+            last_response = response_text
             parsed = extract_json_payload(response_text)
             results = normalize_results(parsed)
             result_map = {item["index"]: item for item in results}
             missing = [idx for idx in indices if idx not in result_map]
             if missing:
-                raise ValueError(f"Missing indices in response: {missing}")
+                received_indices = sorted(result_map.keys())
+                error_detail = f"Missing indices in response: {missing}\n"
+                error_detail += f"Expected indices: {sorted(indices)}\n"
+                error_detail += f"Received indices: {received_indices}\n"
+                error_detail += f"Number of results: {len(results)}, expected: {len(indices)}"
+                raise ValueError(error_detail)
             if delay > 0:
                 time.sleep(delay)
             return result_map
@@ -298,7 +389,14 @@ def label_batch(
                 time.sleep(1.0 + attempt)
             else:
                 break
-    raise RuntimeError(f"Failed to label batch after {max_retries + 1} attempts: {last_error}")
+    # Build detailed error message
+    error_msg = f"Failed to label batch after {max_retries + 1} attempts: {last_error}"
+    if last_response and isinstance(last_error, ValueError):
+        if "Failed to parse JSON" in str(last_error) or "Missing indices" in str(last_error):
+            error_msg += f"\n\n完整模型响应:\n{last_response}"
+            if "Missing indices" in str(last_error):
+                error_msg += f"\n\n提示: 模型可能没有为所有候选者返回结果。请检查模型响应是否包含所有必需的索引。"
+    raise RuntimeError(error_msg)
 
 
 def chunk_list(values: List[int], size: int) -> List[List[int]]:
@@ -315,7 +413,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/output/annotations/gold_eval_50_codex5.2_v1.jsonl"),
+        default=None,
+        help="Output path. If not specified, will be auto-generated based on model name and timestamp.",
     )
     parser.add_argument("--provider", choices=["ollama", "siliconflow"], required=True)
     parser.add_argument("--model", default=os.getenv("MODEL", ""))
@@ -349,8 +448,26 @@ def build_client(args: argparse.Namespace) -> LLMClient:
     raise ValueError(f"Unknown provider: {args.provider}")
 
 
+def sanitize_model_name(model: str) -> str:
+    """Sanitize model name for use in file paths."""
+    # Replace common special characters with safe alternatives
+    model = re.sub(r'[^\w\-_.]', '_', model)
+    # Replace multiple underscores with single underscore
+    model = re.sub(r'_+', '_', model)
+    # Remove leading/trailing underscores
+    model = model.strip('_')
+    return model or "unknown_model"
+
+
 def main() -> None:
     args = parse_args()
+    
+    # Auto-generate output path if not specified
+    if args.output is None:
+        model_name = sanitize_model_name(args.model or os.getenv("MODEL", "unknown"))
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        args.output = Path(f"data/output/annotations/gold_eval_50_{model_name}_{timestamp}.jsonl")
+    
     input_records = load_jsonl(args.input)
     if args.limit > 0:
         input_records = input_records[: args.limit]
@@ -360,6 +477,17 @@ def main() -> None:
         existing_cache = build_existing_label_map(load_jsonl(args.output))
 
     client = build_client(args)
+    
+    # Test connection for Ollama clients
+    if isinstance(client, OllamaClient):
+        print("正在测试 Ollama 连接...")
+        try:
+            client.test_connection()
+            print(f"✓ Ollama 连接成功，使用模型: {args.model}")
+        except Exception as exc:
+            print(f"✗ Ollama 连接测试失败: {exc}")
+            raise
+    
     output_records: List[Dict[str, Any]] = []
 
     total_queries = len(input_records)
