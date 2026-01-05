@@ -1,0 +1,18 @@
+{
+  "query_ids": [
+    2393,
+    7551,
+    7774,
+    8032,
+    8102,
+    8323,
+    9462,
+    9477,
+    9908,
+    9927
+  ],
+  "count": 10,
+  "updated_at": "2026-01-05 17:12:56",
+  "source": "gold_eval_no_positive",
+  "notes": "Confirmed no-positive queries dropped from future sampling."
+}
