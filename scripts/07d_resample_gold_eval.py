@@ -86,6 +86,22 @@ def load_dropped_ids(path: Path) -> Set[int]:
     return set(payload.get("query_ids", []))
 
 
+def update_dropped_json(path: Path, new_dropped: List[int]) -> None:
+    if not new_dropped:
+        return
+    existing = load_dropped_ids(path)
+    merged = sorted(existing | set(new_dropped))
+    payload = {
+        "query_ids": merged,
+        "count": len(merged),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "source": "gold_eval_no_positive",
+        "notes": "Confirmed no-positive queries dropped from future sampling.",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Resample Gold Eval queries by dropping no-positive queries.")
     parser.add_argument(
@@ -121,6 +137,11 @@ def parse_args() -> argparse.Namespace:
         default=Path("config/eval_blacklist_resampled.json"),
     )
     parser.add_argument(
+        "--sync-blacklist",
+        action="store_true",
+        help="Also update config/eval_blacklist.json to match --blacklist-out.",
+    )
+    parser.add_argument(
         "--report-out",
         type=Path,
         default=Path("data/output/annotations/gold_eval_50_resample_report.json"),
@@ -151,7 +172,8 @@ def main() -> None:
     available_qids = [qid for qid in all_qids if qid not in current_qids and qid not in dropped_qids]
 
     if len(drop_qids) == 0:
-        raise RuntimeError("No no-positive queries found to drop.")
+        print("No no-positive queries found. Nothing to resample.")
+        return
     if len(available_qids) < len(drop_qids):
         raise RuntimeError("Not enough available queries to resample replacements.")
 
@@ -204,6 +226,11 @@ def main() -> None:
     }
     args.blacklist_out.parent.mkdir(parents=True, exist_ok=True)
     args.blacklist_out.write_text(json.dumps(blacklist, ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.sync_blacklist and args.blacklist_out != Path("config/eval_blacklist.json"):
+        Path("config/eval_blacklist.json").write_text(
+            json.dumps(blacklist, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     report = {
         "input_retrieval": str(args.input),
@@ -223,11 +250,15 @@ def main() -> None:
     args.report_out.parent.mkdir(parents=True, exist_ok=True)
     args.report_out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    update_dropped_json(args.exclude_dropped, drop_qids)
+
     print("Resample complete.")
     print(f"Dropped: {drop_qids}")
     print(f"Sampled: {sampled_qids}")
     print(f"Output: {args.output}")
     print(f"Blacklist: {args.blacklist_out}")
+    if not args.sync_blacklist and args.blacklist_out != Path("config/eval_blacklist.json"):
+        print("NOTE: Step8 uses config/eval_blacklist.json. Use --sync-blacklist to update it explicitly.")
     print(f"Report: {args.report_out}")
 
 
