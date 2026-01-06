@@ -1,0 +1,38 @@
+{
+  "stage": "stage1",
+  "step": 8,
+  "completed": true,
+  "completed_at": "2026-01-06T16:42:51.686393+08:00",
+  "input_files": {
+    "triplets": "data/output/mining/mined_triplets_stage1.jsonl",
+    "blacklist": "config/eval_blacklist.json"
+  },
+  "output_files": {
+    "train_triplets": "data/output/train/train_triplets_stage1.jsonl",
+    "dev_triplets": "data/output/train/dev_triplets_stage1.jsonl"
+  },
+  "params": {
+    "confidence_threshold": 0.7,
+    "train_ratio": 0.9,
+    "seed": 42,
+    "split_by": "query_id"
+  },
+  "stats": {
+    "input_triplets": 1871,
+    "filtered_blacklist": 350,
+    "filtered_confidence": 0,
+    "filtered_missing_qid": 0,
+    "kept_triplets": 1521,
+    "unique_qids": 199,
+    "train_qids": 179,
+    "dev_qids": 20,
+    "train_triplets": 1274,
+    "dev_triplets": 247
+  },
+  "blacklist_meta": {
+    "path": "config/eval_blacklist.json",
+    "count": 50,
+    "source": "gold_eval_50_final",
+    "updated_at": "2026-01-05 16:58:52"
+  }
+}
