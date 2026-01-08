@@ -1,0 +1,23 @@
+{
+  "train_data": "data/output/train/train_triplets_stage1.jsonl",
+  "dev_data": "data/output/train/dev_triplets_stage1.jsonl",
+  "train_samples": 20,
+  "dev_samples": 20,
+  "train_query_ids": 1,
+  "dev_query_ids": 2,
+  "blacklist_file": "config/eval_blacklist.json",
+  "blacklist_count": 50,
+  "blacklist_source": "gold_eval_50_final",
+  "gold_eval_file": "data/output/annotations/gold_eval_50_extended_final.jsonl",
+  "training_script": "scripts/09_train_reranker.py",
+  "git_commit": "738d21fa35e4aa6d9be03f057e8a4bfe8e5ee476",
+  "created_at": "2026-01-08T00:59:05.304873+08:00",
+  "neg_stats": {
+    "min": 5,
+    "max": 5,
+    "avg": 5.0,
+    "median": 5.0,
+    "p75": 5,
+    "p95": 5
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "stage": "stage1",
+  "step": 9,
+  "completed": true,
+  "completed_at": "2026-01-08T00:59:05.305429+08:00",
+  "model_name": "Qwen/Qwen3-Reranker-4B",
+  "lora_config": {
+    "r": 16,
+    "alpha": 32,
+    "dropout": 0.1,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj"
+    ]
+  },
+  "training_args": {
+    "learning_rate": 2e-05,
+    "num_train_epochs": 1,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 32,
+    "warmup_ratio": 0.1,
+    "eval_steps": 10,
+    "save_steps": 50,
+    "keep_checkpoints": false,
+    "max_length": 192,
+    "max_neg": 2
+  },
+  "best_metrics": {
+    "metric_name": "eval_loss",
+    "best_metric": 1.6138817071914673,
+    "metrics": {
+      "eval_loss": 1.6138817071914673,
+      "eval_model_preparation_time": 0.0115,
+      "eval_runtime": 1523.2846,
+      "eval_samples_per_second": 0.013,
+      "eval_steps_per_second": 0.013,
+      "epoch": 1.0
+    },
+    "best_at_step": 1,
+    "best_at_epoch": 1.0,
+    "updated_at": "2026-01-08T00:59:05.286069+08:00"
+  },
+  "artifacts_dir": "data/output/artifacts/reranker/qwen-qwen3-reranker-4b/run_20260108-000030",
+  "data_manifest": {
+    "train_data": "data/output/train/train_triplets_stage1.jsonl",
+    "dev_data": "data/output/train/dev_triplets_stage1.jsonl",
+    "train_samples": 20,
+    "dev_samples": 20,
+    "train_query_ids": 1,
+    "dev_query_ids": 2,
+    "blacklist_file": "config/eval_blacklist.json",
+    "blacklist_count": 50,
+    "blacklist_source": "gold_eval_50_final",
+    "gold_eval_file": "data/output/annotations/gold_eval_50_extended_final.jsonl",
+    "training_script": "scripts/09_train_reranker.py",
+    "git_commit": "738d21fa35e4aa6d9be03f057e8a4bfe8e5ee476",
+    "created_at": "2026-01-08T00:59:05.304873+08:00",
+    "neg_stats": {
+      "min": 5,
+      "max": 5,
+      "avg": 5.0,
+      "median": 5.0,
+      "p75": 5,
+      "p95": 5
+    }
+  },
+  "validation": {
+    "initial_eval_loss": 1.6138817071914673,
+    "final_eval_loss": 1.6138817071914673,
+    "loss_drop_percentage": 0.0,
+    "meets_acceptance": false
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "metric_name": "eval_loss",
+  "best_metric": 2.040677070617676,
+  "metrics": {
+    "eval_loss": 2.040677070617676,
+    "eval_model_preparation_time": 0.0067,
+    "eval_runtime": 126.5948,
+    "eval_samples_per_second": 1.951,
+    "eval_steps_per_second": 1.951,
+    "epoch": 1.0
+  },
+  "best_at_step": 160,
+  "best_at_epoch": 1.0,
+  "updated_at": "2026-01-07T02:48:26.569928+08:00"
+}

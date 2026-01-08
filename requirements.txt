@@ -7,3 +7,7 @@ rank-bm25
 
 
 
+torch
+transformers>=4.51.0
+peft
+accelerate
