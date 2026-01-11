@@ -1,0 +1,75 @@
+{
+  "stage": "stage1",
+  "step": 9,
+  "completed": true,
+  "completed_at": "2026-01-10T01:38:40.780205+08:00",
+  "model_name": "BAAI/bge-reranker-v2-m3",
+  "lora_config": {
+    "r": 16,
+    "alpha": 32,
+    "dropout": 0.1,
+    "target_modules": [
+      "query",
+      "key",
+      "value",
+      "dense"
+    ]
+  },
+  "training_args": {
+    "learning_rate": 2e-05,
+    "num_train_epochs": 1,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "warmup_ratio": 0.1,
+    "eval_steps": 50,
+    "save_steps": 50,
+    "keep_checkpoints": false,
+    "max_length": 512,
+    "max_neg": 7
+  },
+  "best_metrics": {
+    "metric_name": "eval_loss",
+    "best_metric": 0.909741997718811,
+    "metrics": {
+      "eval_loss": 0.909741997718811,
+      "eval_model_preparation_time": 0.0075,
+      "eval_runtime": 18.5286,
+      "eval_samples_per_second": 1.079,
+      "eval_steps_per_second": 1.079,
+      "epoch": 1.0
+    },
+    "best_at_step": 2,
+    "best_at_epoch": 1.0,
+    "updated_at": "2026-01-10T01:38:40.764410+08:00"
+  },
+  "artifacts_dir": "data/output/artifacts/reranker/baai-bge-reranker-v2-m3/run_20260110-013728_stage1_lr2e-05_e1_bs1_ga8_len512_neg7_seed42_smoke",
+  "data_manifest": {
+    "train_data": "data/output/train/train_triplets_stage1.jsonl",
+    "dev_data": "data/output/train/dev_triplets_stage1.jsonl",
+    "train_samples": 10,
+    "dev_samples": 20,
+    "train_query_ids": 1,
+    "dev_query_ids": 2,
+    "blacklist_file": "config/eval_blacklist.json",
+    "blacklist_count": 50,
+    "blacklist_source": "gold_eval_50_final",
+    "gold_eval_file": "data/output/annotations/gold_eval_50_extended_final.jsonl",
+    "training_script": "scripts/09_train_reranker.py",
+    "git_commit": "865bbf5cd8c9635411367e3d2ca979e374d7be5a",
+    "created_at": "2026-01-10T01:38:40.779608+08:00",
+    "neg_stats": {
+      "min": 5,
+      "max": 5,
+      "avg": 5.0,
+      "median": 5.0,
+      "p75": 5,
+      "p95": 5
+    }
+  },
+  "validation": {
+    "initial_eval_loss": 0.9091228246688843,
+    "final_eval_loss": 0.909741997718811,
+    "loss_drop_percentage": -0.06810664446272918,
+    "meets_acceptance": false
+  }
+}

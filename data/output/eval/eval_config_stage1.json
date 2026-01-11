@@ -1,0 +1,23 @@
+{
+  "stage": "stage1",
+  "gold_eval_file": "data/output/annotations/gold_eval_50_extended_final.jsonl",
+  "gold_eval_count": 50,
+  "embedding_results": "data/output/retrieval/embedding_top20_stage1.jsonl",
+  "hybrid_results": "data/output/retrieval/hybrid_rrf_top20_stage1.jsonl",
+  "base_reranker": "Qwen/Qwen3-Reranker-0.6B",
+  "finetuned_reranker": "data/output/artifacts/reranker/qwen3-0.6b-lora/run_stage1/adapter",
+  "device": "mps",
+  "batch_size": 16,
+  "max_length": 512,
+  "base_text_stats": {
+    "missing_text_count": 0,
+    "missing_text_rate": 0.0,
+    "total_candidates": 1000
+  },
+  "finetuned_text_stats": {
+    "missing_text_count": 0,
+    "missing_text_rate": 0.0,
+    "total_candidates": 1000
+  },
+  "created_at": "2026-01-09T22:23:48.763064+08:00"
+}

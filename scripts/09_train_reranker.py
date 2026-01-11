@@ -7,7 +7,10 @@ import argparse
 import inspect
 import json
 import os
+import platform
+import re
 import statistics
+import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -56,6 +59,113 @@ def _model_tag(model_name: str) -> str:
         .replace(" ", "-")
         .replace("@", "-")
     )
+
+
+def _slugify_tag(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9._-]+", "-", value)
+    value = value.strip("-_")
+    return value
+
+
+def _sysctl_value(key: str) -> Optional[str]:
+    try:
+        out = subprocess.check_output(
+            ["sysctl", "-n", key],
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+    value = out.decode("utf-8", errors="ignore").strip()
+    return value or None
+
+
+def _get_device_info() -> Dict[str, Any]:
+    if torch.cuda.is_available():
+        device_index = 0
+        info: Dict[str, Any] = {"type": "cuda", "index": device_index}
+        try:
+            info["count"] = torch.cuda.device_count()
+        except Exception:
+            pass
+        try:
+            info["name"] = torch.cuda.get_device_name(device_index)
+        except Exception:
+            pass
+        try:
+            props = torch.cuda.get_device_properties(device_index)
+            total_memory = getattr(props, "total_memory", None)
+            if total_memory is not None:
+                info["total_memory_bytes"] = int(total_memory)
+        except Exception:
+            pass
+        try:
+            capability = torch.cuda.get_device_capability(device_index)
+            info["capability"] = list(capability)
+        except Exception:
+            pass
+        return info
+
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        info = {"type": "mps"}
+        chip = _sysctl_value("machdep.cpu.brand_string")
+        if chip:
+            info["name"] = chip
+        return info
+
+    info = {"type": "cpu"}
+    cpu = platform.processor() or platform.machine()
+    if cpu:
+        info["name"] = cpu
+    return info
+
+
+def _device_dir_tag(device_info: Dict[str, Any]) -> str:
+    device_type = str(device_info.get("type") or "unknown")
+    parts = [device_type]
+    if device_type == "cuda":
+        count = device_info.get("count")
+        if isinstance(count, int) and count > 1:
+            parts.append(f"{count}gpu")
+    name = device_info.get("name")
+    if name:
+        parts.append(str(name))
+    tag = _slugify_tag("_".join(parts))
+    return tag or "unknown"
+
+
+def _auto_run_tag(args: argparse.Namespace, max_length: int) -> str:
+    max_neg = args.max_neg if args.max_neg is not None else "all"
+    lr = f"{args.learning_rate:g}"
+    parts = [
+        str(args.stage),
+        f"lr{lr}",
+        f"e{args.num_epochs}",
+        f"bs{args.batch_size}",
+        f"ga{args.gradient_accumulation_steps}",
+        f"len{max_length}",
+        f"neg{max_neg}",
+        f"seed{args.seed}",
+    ]
+    return _slugify_tag("_".join(parts))
+
+
+def _build_run_dir_name(
+    run_id: str,
+    auto_tag: Optional[str],
+    user_tag: Optional[str],
+    disable_auto: bool,
+) -> str:
+    tags: List[str] = []
+    if not disable_auto and auto_tag:
+        tags.append(auto_tag)
+    if user_tag:
+        cleaned = _slugify_tag(user_tag)
+        if cleaned:
+            tags.append(cleaned)
+    if tags:
+        return f"run_{run_id}_" + "_".join(tags)
+    return f"run_{run_id}"
 
 
 def _get_git_commit(repo_root: Path) -> str:
@@ -411,6 +521,22 @@ def parse_args() -> argparse.Namespace:
         default="Qwen/Qwen3-Reranker-0.6B",
     )
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument(
+        "--no-device-tag",
+        action="store_true",
+        help="Do not add a device tag folder (cuda/mps/cpu) to the auto output-dir.",
+    )
+    parser.add_argument(
+        "--run-tag",
+        type=str,
+        default=None,
+        help="Append a tag to the auto-generated run directory name.",
+    )
+    parser.add_argument(
+        "--no-auto-run-tag",
+        action="store_true",
+        help="Disable auto-generated run tags in the output directory name.",
+    )
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--max-length", type=int, default=None)
     parser.add_argument("--max-neg", type=int, default=None)
@@ -493,11 +619,8 @@ def main() -> None:
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     model_tag = _model_tag(args.model_name)
-    if args.output_dir:
-        output_dir = args.output_dir
-    else:
-        output_dir = Path("data/output/artifacts/reranker") / model_tag / f"run_{run_id}"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    device_info = _get_device_info()
+    device_tag = _device_dir_tag(device_info)
     if args.wandb:
         os.environ.setdefault("WANDB_PROJECT", args.wandb_project)
         if args.wandb_run_name:
@@ -524,6 +647,23 @@ def main() -> None:
     if tokenizer.pad_token_id is not None:
         model.config.pad_token_id = tokenizer.pad_token_id
 
+    max_length = _resolve_max_length(args, cfg, tokenizer)
+    run_dir_name = _build_run_dir_name(
+        run_id,
+        _auto_run_tag(args, max_length),
+        args.run_tag,
+        args.no_auto_run_tag,
+    )
+    if args.output_dir:
+        output_dir = args.output_dir
+    else:
+        base_dir = Path("data/output/artifacts/reranker") / model_tag
+        if args.no_device_tag:
+            output_dir = base_dir / run_dir_name
+        else:
+            output_dir = base_dir / device_tag / run_dir_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     target_modules = _filter_lora_targets(model, args.lora_target_modules)
     removed = [m for m in args.lora_target_modules if m not in target_modules]
     if removed:
@@ -541,7 +681,6 @@ def main() -> None:
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    max_length = _resolve_max_length(args, cfg, tokenizer)
     data_collator = TripletCollator(tokenizer, max_length, args.max_neg)
 
     report_to: List[str] = ["wandb"] if args.wandb else []
@@ -653,6 +792,8 @@ def main() -> None:
         blacklist_meta=blacklist_meta,
         gold_eval_path=args.gold_eval if args.gold_eval else None,
     )
+    data_manifest["device"] = device_info
+    data_manifest["device_tag"] = device_tag
     data_manifest["neg_stats"] = _neg_stats(train_records)
     (output_dir / "data_manifest.json").write_text(
         json.dumps(data_manifest, ensure_ascii=False, indent=2),
@@ -674,6 +815,8 @@ def main() -> None:
             "completed": True,
             "completed_at": _beijing_now_iso(),
             "model_name": args.model_name,
+            "device": device_info,
+            "device_tag": device_tag,
             "lora_config": {
                 "r": args.lora_r,
                 "alpha": args.lora_alpha,
