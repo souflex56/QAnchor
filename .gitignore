@@ -19,6 +19,9 @@ wandb/
 # output 目录 embeddings
 data/output/embeddings/
 
+.tmp.drivedownload/
+.tmp.driveupload
+colab_bundle_reranker_stage1/
 
 # ============================================
 # Python 相关

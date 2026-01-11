@@ -1,0 +1,35 @@
+{
+  "train_data": "data/output/train/train_triplets_stage1.jsonl",
+  "dev_data": "data/output/train/dev_triplets_stage1.jsonl",
+  "train_samples": 1274,
+  "dev_samples": 247,
+  "train_query_ids": 179,
+  "dev_query_ids": 20,
+  "blacklist_file": "config/eval_blacklist.json",
+  "blacklist_count": 50,
+  "blacklist_source": "gold_eval_50_final",
+  "gold_eval_file": "data/output/annotations/gold_eval_50_extended_final.jsonl",
+  "training_script": "scripts/09_train_reranker.py",
+  "git_commit": "unknown",
+  "created_at": "2026-01-11T17:03:07.356201+08:00",
+  "device": {
+    "type": "cuda",
+    "index": 0,
+    "count": 1,
+    "name": "Tesla T4",
+    "total_memory_bytes": 15828320256,
+    "capability": [
+      7,
+      5
+    ]
+  },
+  "device_tag": "cuda_tesla-t4",
+  "neg_stats": {
+    "min": 3,
+    "max": 36,
+    "avg": 14.373626373626374,
+    "median": 12.0,
+    "p75": 21,
+    "p95": 34
+  }
+}
