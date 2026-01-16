@@ -2,7 +2,7 @@
   "stage": "stage1",
   "step": 10,
   "completed": true,
-  "completed_at": "2026-01-11T22:51:55.463918+08:00",
+  "completed_at": "2026-01-12T21:19:06.940017+08:00",
   "gold_eval_file": "data/output/annotations/gold_eval_50_extended_final.jsonl",
   "gold_eval_count": 50,
   "metrics_comparison": {
@@ -13,48 +13,48 @@
       "unjudged_rate": 0.0
     },
     "hybrid_rrf": {
-      "mrr@10": 0.5756349206349206,
-      "ndcg@10": 0.6778385311003877,
-      "p@10": 0.172,
+      "mrr@10": 0.5456904761904762,
+      "ndcg@10": 0.6842246797122756,
+      "p@10": 0.154,
       "unjudged_rate": 0.0
     },
     "hybrid_base_reranker": {
-      "mrr@10": 0.6553333333333333,
-      "ndcg@10": 0.783974497337848,
-      "p@10": 0.182,
+      "mrr@10": 0.6311904761904762,
+      "ndcg@10": 0.7915329627605482,
+      "p@10": 0.162,
       "unjudged_rate": 0.0
     },
     "hybrid_finetuned_reranker": {
-      "mrr@10": 0.6508888888888889,
-      "ndcg@10": 0.8310245708074452,
-      "p@10": 0.212,
+      "mrr@10": 0.6572222222222223,
+      "ndcg@10": 0.8248788939069975,
+      "p@10": 0.188,
       "unjudged_rate": 0.0
     }
   },
   "degraded_cases_count": 10,
   "base_reranker": "BAAI/bge-reranker-v2-m3",
-  "finetuned_reranker": "data/output/artifacts/reranker/baai-bge-reranker-v2-m3/cuda_tesla-t4/run_20260111-080055_stage1_lr2e-05_e3_bs1_ga8_len512_neg3_seed42/adapter",
+  "finetuned_reranker": "data/output/artifacts/reranker/baai-bge-reranker-v2-m3/cuda_nvidia-geforce-rtx-4090/run_20260112-190710_stage1_lr2e-05_e3_bs1_ga8_len512_neg7_seed42/adapter",
   "evaluation_config": {
     "stage": "stage1",
     "gold_eval_file": "data/output/annotations/gold_eval_50_extended_final.jsonl",
     "gold_eval_count": 50,
     "embedding_results": "data/output/retrieval/embedding_top20_stage1.jsonl",
-    "hybrid_results": "data/output/retrieval/hybrid_rrf_top20_stage1.jsonl",
+    "hybrid_results": "data/output/retrieval/hybrid_rrf_top20_stage1_no_table.jsonl",
     "base_reranker": "BAAI/bge-reranker-v2-m3",
-    "finetuned_reranker": "data/output/artifacts/reranker/baai-bge-reranker-v2-m3/cuda_tesla-t4/run_20260111-080055_stage1_lr2e-05_e3_bs1_ga8_len512_neg3_seed42/adapter",
+    "finetuned_reranker": "data/output/artifacts/reranker/baai-bge-reranker-v2-m3/cuda_nvidia-geforce-rtx-4090/run_20260112-190710_stage1_lr2e-05_e3_bs1_ga8_len512_neg7_seed42/adapter",
     "device": "mps",
-    "batch_size": 16,
+    "batch_size": 8,
     "max_length": 512,
     "base_text_stats": {
       "missing_text_count": 0,
       "missing_text_rate": 0.0,
-      "total_candidates": 1000
+      "total_candidates": 834
     },
     "finetuned_text_stats": {
       "missing_text_count": 0,
       "missing_text_rate": 0.0,
-      "total_candidates": 1000
+      "total_candidates": 834
     },
-    "created_at": "2026-01-11T22:51:55.463553+08:00"
+    "created_at": "2026-01-12T21:19:06.939791+08:00"
   }
 }
