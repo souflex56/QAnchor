@@ -14,7 +14,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import yaml
@@ -280,6 +280,78 @@ def _scores_from_logits(logits: torch.Tensor, config: Any) -> torch.Tensor:
     return logits[:, 0]
 
 
+_PAIR_FORMAT_CHOICES = (
+    "hf_pair",
+    "qwen3_template",
+    "qwen3_marked",  # alias to template for backward compatibility
+    "qwen3_marked_legacy",
+    "qwen3_chat",
+    "auto",
+)
+
+_QWEN3_INSTRUCTION = (
+    "Given a web search query, retrieve relevant passages that answer the query"
+)
+_QWEN3_PREFIX = (
+    "<|im_start|>system\n"
+    "Judge whether the Document meets the requirements based on the Query and the Instruct provided. "
+    'Note that the answer can only be "yes" or "no".<|im_end|>\n'
+    "<|im_start|>user\n"
+)
+_QWEN3_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
+def _resolve_pair_format(pair_format: str, model_config: Any, model_name: str) -> str:
+    if pair_format != "auto":
+        return pair_format
+    model_type = getattr(model_config, "model_type", None)
+    if model_type == "qwen3":
+        return "qwen3_template"
+    for arch in getattr(model_config, "architectures", None) or []:
+        if "Qwen3" in str(arch):
+            return "qwen3_template"
+    if "qwen3" in model_name.lower():
+        return "qwen3_template"
+    return "hf_pair"
+
+
+def _format_pair(
+    query: str, passage: str, pair_format: str
+) -> Union[Tuple[str, str], str]:
+    if pair_format == "hf_pair":
+        return (query, passage)
+    if pair_format == "qwen3_marked_legacy":
+        return (f"<Query>: {query}", f"<Document>: {passage}")
+    if pair_format in ("qwen3_template", "qwen3_marked", "qwen3_chat"):
+        return (
+            f"{_QWEN3_PREFIX}"
+            f"<Instruct>: {_QWEN3_INSTRUCTION}\n<Query>: {query}\n<Document>: {passage}{_QWEN3_SUFFIX}"
+        )
+    raise ValueError(f"Unknown pair_format: {pair_format}")
+
+
+def _format_qwen3_template(
+    tokenizer: Any, max_length: int, query: str, passage: str
+) -> str:
+    prefix = (
+        f"{_QWEN3_PREFIX}"
+        f"<Instruct>: {_QWEN3_INSTRUCTION}\n<Query>: {query}\n<Document>: "
+    )
+    suffix = _QWEN3_SUFFIX
+
+    prefix_ids = tokenizer(prefix, add_special_tokens=False).input_ids
+    suffix_ids = tokenizer(suffix, add_special_tokens=False).input_ids
+    doc_ids = tokenizer(passage, add_special_tokens=False).input_ids
+    special_tokens = tokenizer.num_special_tokens_to_add(pair=False)
+    available = max_length - len(prefix_ids) - len(suffix_ids) - special_tokens
+    if available < 0:
+        available = 0
+    if len(doc_ids) > available:
+        doc_ids = doc_ids[:available]
+    doc_text = tokenizer.decode(doc_ids, skip_special_tokens=True)
+    return f"{prefix}{doc_text}{suffix}"
+
+
 class TripletDataset(Dataset):
     def __init__(
         self,
@@ -312,13 +384,15 @@ class TripletCollator:
         tokenizer: Any,
         max_length: int,
         max_neg: Optional[int],
+        pair_format: str,
     ) -> None:
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.max_neg = max_neg
+        self.pair_format = pair_format
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-        pairs: List[Tuple[str, str]] = []
+        pairs: List[Any] = []
         group_sizes: List[int] = []
 
         for item in features:
@@ -327,18 +401,34 @@ class TripletCollator:
             candidates = [pos_text] + list(neg_texts)
             group_sizes.append(len(candidates))
             for cand in candidates:
-                pairs.append((item["query"], cand))
+                if self.pair_format in ("qwen3_template", "qwen3_marked", "qwen3_chat"):
+                    pairs.append(
+                        _format_qwen3_template(
+                            self.tokenizer, self.max_length, item["query"], cand
+                        )
+                    )
+                else:
+                    pairs.append(_format_pair(item["query"], cand, self.pair_format))
 
-        queries = [p[0] for p in pairs]
-        passages = [p[1] for p in pairs]
-        batch = self.tokenizer(
-            queries,
-            passages,
-            padding=True,
-            truncation=True,
-            max_length=self.max_length,
-            return_tensors="pt",
-        )
+        if self.pair_format in ("hf_pair", "qwen3_marked_legacy"):
+            queries = [p[0] for p in pairs]
+            passages = [p[1] for p in pairs]
+            truncation = "only_second" if self.pair_format == "qwen3_marked_legacy" else True
+            batch = self.tokenizer(
+                queries,
+                passages,
+                padding=True,
+                truncation=truncation,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+        else:
+            batch = self.tokenizer(
+                pairs,
+                padding=True,
+                truncation=False,
+                return_tensors="pt",
+            )
         batch["group_sizes"] = group_sizes
         return batch
 
@@ -542,6 +632,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-neg", type=int, default=None)
     parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--max-dev-samples", type=int, default=None)
+    parser.add_argument(
+        "--pair-format",
+        type=str,
+        default="auto",
+        choices=_PAIR_FORMAT_CHOICES,
+        help=(
+            "Input format for query-passage pairs. "
+            "hf_pair: tokenizer(query, passage). "
+            "qwen3_template/qwen3_chat: full chat template for Qwen3 reranker (system/user/assistant + <think>). "
+            "qwen3_marked: alias to qwen3_template. "
+            "qwen3_marked_legacy: legacy <Query>/<Document> markers (for A/B only). "
+            "auto (default): detect based on model config or adapter metadata."
+        ),
+    )
 
     parser.add_argument("--learning-rate", type=float, default=2e-5)
     parser.add_argument("--num-epochs", type=int, default=5)
@@ -647,6 +751,8 @@ def main() -> None:
     if tokenizer.pad_token_id is not None:
         model.config.pad_token_id = tokenizer.pad_token_id
 
+    pair_format = _resolve_pair_format(args.pair_format, model.config, args.model_name)
+
     max_length = _resolve_max_length(args, cfg, tokenizer)
     run_dir_name = _build_run_dir_name(
         run_id,
@@ -681,7 +787,7 @@ def main() -> None:
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    data_collator = TripletCollator(tokenizer, max_length, args.max_neg)
+    data_collator = TripletCollator(tokenizer, max_length, args.max_neg, pair_format)
 
     report_to: List[str] = ["wandb"] if args.wandb else []
     training_kwargs: Dict[str, Any] = {
@@ -777,8 +883,11 @@ def main() -> None:
         tokenizer_dir.mkdir(parents=True, exist_ok=True)
         tokenizer.save_pretrained(str(tokenizer_dir))
 
+    training_args_payload = training_args.to_dict()
+    training_args_payload["pair_format"] = pair_format
+    training_args_payload["pair_format_requested"] = args.pair_format
     (output_dir / "training_args.json").write_text(
-        json.dumps(training_args.to_dict(), ensure_ascii=False, indent=2),
+        json.dumps(training_args_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     trainer.state.save_to_json(str(output_dir / "trainer_state.json"))
@@ -795,6 +904,8 @@ def main() -> None:
     data_manifest["device"] = device_info
     data_manifest["device_tag"] = device_tag
     data_manifest["neg_stats"] = _neg_stats(train_records)
+    data_manifest["pair_format"] = pair_format
+    data_manifest["pair_format_requested"] = args.pair_format
     (output_dir / "data_manifest.json").write_text(
         json.dumps(data_manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -834,6 +945,8 @@ def main() -> None:
                 "keep_checkpoints": args.keep_checkpoints,
                 "max_length": max_length,
                 "max_neg": args.max_neg,
+                "pair_format": pair_format,
+                "pair_format_requested": args.pair_format,
             },
             "best_metrics": json.loads(metrics_path.read_text(encoding="utf-8")),
             "artifacts_dir": str(output_dir),

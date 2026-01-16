@@ -1,0 +1,103 @@
+{
+  "stage": "stage1",
+  "step": 9,
+  "completed": true,
+  "completed_at": "2026-01-16T22:26:20.100981+08:00",
+  "model_name": "tomaarsen/Qwen3-Reranker-0.6B-seq-cls",
+  "device": {
+    "type": "cuda",
+    "index": 0,
+    "count": 1,
+    "name": "NVIDIA GeForce RTX 4090",
+    "total_memory_bytes": 25250627584,
+    "capability": [
+      8,
+      9
+    ]
+  },
+  "device_tag": "cuda_nvidia-geforce-rtx-4090",
+  "lora_config": {
+    "r": 16,
+    "alpha": 32,
+    "dropout": 0.1,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj"
+    ]
+  },
+  "training_args": {
+    "learning_rate": 2e-05,
+    "num_train_epochs": 3,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "warmup_ratio": 0.1,
+    "eval_steps": 50,
+    "save_steps": 50,
+    "keep_checkpoints": false,
+    "max_length": 512,
+    "max_neg": 7,
+    "pair_format": "qwen3_marked",
+    "pair_format_requested": "qwen3_marked"
+  },
+  "best_metrics": {
+    "metric_name": "eval_loss",
+    "best_metric": 2.4727041721343994,
+    "metrics": {
+      "eval_loss": 2.4727041721343994,
+      "eval_model_preparation_time": 0.0115,
+      "eval_runtime": 34.2565,
+      "eval_samples_per_second": 7.21,
+      "eval_steps_per_second": 7.21,
+      "epoch": 0.9419152276295133
+    },
+    "best_at_step": 150,
+    "best_at_epoch": 0.9419152276295133,
+    "updated_at": "2026-01-16T22:09:07.857579+08:00"
+  },
+  "artifacts_dir": "data/output/artifacts/reranker/tomaarsen-qwen3-reranker-0.6b-seq-cls/cuda_nvidia-geforce-rtx-4090/run_20260116-220018_stage1_lr2e-05_e3_bs1_ga8_len512_neg7_seed42",
+  "data_manifest": {
+    "train_data": "data/output/train/train_triplets_stage1.jsonl",
+    "dev_data": "data/output/train/dev_triplets_stage1.jsonl",
+    "train_samples": 1274,
+    "dev_samples": 247,
+    "train_query_ids": 179,
+    "dev_query_ids": 20,
+    "blacklist_file": "config/eval_blacklist.json",
+    "blacklist_count": 50,
+    "blacklist_source": "gold_eval_50_final",
+    "gold_eval_file": "data/output/annotations/gold_eval_50_extended_final.jsonl",
+    "training_script": "scripts/09_train_reranker.py",
+    "git_commit": "unknown",
+    "created_at": "2026-01-16T22:26:20.100641+08:00",
+    "device": {
+      "type": "cuda",
+      "index": 0,
+      "count": 1,
+      "name": "NVIDIA GeForce RTX 4090",
+      "total_memory_bytes": 25250627584,
+      "capability": [
+        8,
+        9
+      ]
+    },
+    "device_tag": "cuda_nvidia-geforce-rtx-4090",
+    "neg_stats": {
+      "min": 3,
+      "max": 36,
+      "avg": 14.373626373626374,
+      "median": 12.0,
+      "p75": 21,
+      "p95": 34
+    },
+    "pair_format": "qwen3_marked",
+    "pair_format_requested": "qwen3_marked"
+  },
+  "validation": {
+    "initial_eval_loss": 3.2440056800842285,
+    "final_eval_loss": 3.0812549591064453,
+    "loss_drop_percentage": 5.016967817810896,
+    "meets_acceptance": false
+  }
+}
