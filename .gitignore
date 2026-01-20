@@ -6,6 +6,8 @@
 # ============================================
 # PDF 报告文件目录（11GB，包含 1780 个 PDF 文件）
 data/input/finglm_report_pdf/
+data/output/chunks/
+data/output/checkpoints/
 
 # 参考代码和文档目录（37MB）
 Reference/
