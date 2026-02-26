@@ -6,12 +6,19 @@ QAnchor 是一个端到端的检索优化闭环：在缺乏高质量标注数据
 
 核心故事线：**PDF 结构化分块 → 多路召回 → 反向挖掘训练集 → Listwise 微调 → Gold Eval 评测**。
 
-## 📌 关键结果（Stage1 · 2026-01-18）
-- **最佳配置**：Qwen3-0.6B + `qwen3_template`, max_len=768
-- **指标**：MRR@10 0.7758 / NDCG@10 0.8761 / P@10 0.228
-- **基线对比**：Embedding-only 0.4115；Hybrid RRF 0.5756；Base Reranker 0.6115
-- **事实源**：`data/output/eval/stage1_reranker_comparison_report_20260118_v2.md`
+## 📌 评测结果
+| 模型配置 | 阶段 | max_length | MRR@10 | NDCG@10 | P@10 |
+| --- | --- | --- | --- | --- | --- |
+| Qwen3-Reranker-0.6B-seq-cls | Base | 768 | 0.6115 | 0.7572 | 0.192 |
+| **★ Qwen3-Reranker-0.6B-seq-cls** | **Finetuned** | **768** | **0.7758 (+26.9%)** | **0.8761 (+15.7%)** | **0.228 (+18.8%)** |
+| BGE-v2-m3 | Base | 768 | 0.6443 | 0.7986 | 0.190 |
+| BGE-v2-m3 | Finetuned | 768 | 0.7096 (+10.1%) | 0.8522 (+6.7%) | 0.226 (+18.9%) |
+| BGE-v2-m3 | Base | 512 | 0.6553 | 0.7840 | 0.182 |
+| BGE-v2-m3 | Finetuned | 512 | 0.7103 (+8.4%) | 0.8282 (+5.6%) | 0.224 (+23.1%) |
 
+本次最优为 **Qwen3-Reranker-0.6B-seq-cls Finetuned**。  `max_length` 为 reranker 输入序列的最大长度（Query + Document 拼接后的 token 序列，超出会截断）。
+
+完整报告：`data/output/eval/stage1_reranker_comparison_report_20260118_v2.md`
 ## 项目目标与范围
 QAnchor 是一个弱监督 Query–Chunk 训练数据生成与检索排序 pipeline，用于支撑 ZenSeeker（A 股财报问答系统）的检索与排序能力。
 
@@ -113,19 +120,6 @@ QAnchor 是一个弱监督 Query–Chunk 训练数据生成与检索排序 pipel
 
 ---
 
-## 📊 关键结果表（本次评测）
-- **数据来源**：`data/output/eval/stage1_reranker_comparison_report_20260118_v2.md`
-
-| 模型配置 | 阶段 | MRR@10 | NDCG@10 | P@10 |
-| --- | --- | --- | --- | --- |
-| Qwen3-0.6B (qwen3_template, 768) | Base | 0.6115 | 0.7572 | 0.192 |
-| Qwen3-0.6B (qwen3_template, 768) | Finetuned | 0.7758 | 0.8761 | 0.228 |
-| BGE-v2-m3 (hf_pair, 768) | Base | 0.6443 | 0.7986 | 0.190 |
-| BGE-v2-m3 (hf_pair, 768) | Finetuned | 0.7096 | 0.8522 | 0.226 |
-| BGE-v2-m3 (hf_pair, 512) | Base | 0.6553 | 0.7840 | 0.182 |
-| BGE-v2-m3 (hf_pair, 512) | Finetuned | 0.7103 | 0.8282 | 0.224 |
-
----
 
 ## 🚀 复现指南（全流程）
 
