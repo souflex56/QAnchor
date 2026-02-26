@@ -12,7 +12,11 @@ def rrf_fuse(
     missing_rank: int = 9999,
     top_k: int | None = None,
 ) -> List[Dict]:
-    """对单个 query 的两路结果做 RRF 融合。"""
+    """对单个 query 的两路结果做 RRF 融合。
+
+    RRF is rank-only fusion: it uses per-source ranks and ignores raw score
+    magnitudes (and any score-level source weights).
+    """
     combined: Dict[str, Dict] = {}
 
     def _add_source(hits: Sequence[Dict], key: str) -> None:
@@ -44,6 +48,7 @@ def rrf_fuse(
     for entry in combined.values():
         emb_rank = entry.get("embedding_rank", missing_rank) or missing_rank
         bm_rank = entry.get("bm25_rank", missing_rank) or missing_rank
+        # Rank-only fusion formula.
         rrf_score = 1.0 / (rrf_k + emb_rank) + 1.0 / (rrf_k + bm_rank)
         fused.append({**entry, "score": rrf_score})
 

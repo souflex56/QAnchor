@@ -50,6 +50,8 @@ class BM25Retriever:
         _ensure_rankbm25()
         from rank_bm25 import BM25Okapi
 
+        # Intentionally use BM25Okapi defaults (k1/b/epsilon) unless explicitly
+        # exposed in config. For reproducibility, pin rank-bm25 version.
         self.BM25 = BM25Okapi
         self.indices: Dict[str, Tuple[object, List[ChunkDoc]]] = {}
 
@@ -80,6 +82,7 @@ class BM25Retriever:
             self.indices[pdf_stem] = (None, [])
             return
 
+        # No explicit k1/b/epsilon passed here; library defaults are used.
         index = self.BM25(tokenized_docs)
         self.indices[pdf_stem] = (index, documents)
 

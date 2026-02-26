@@ -199,7 +199,22 @@ def run_three_way_retrieval(args: argparse.Namespace) -> None:
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     data_cfg = cfg["data"]
     retrieval_cfg = cfg["retrieval"]
+    hybrid_cfg = retrieval_cfg.get("hybrid", {}) or {}
     stage_cfg = cfg.get("stages", {})
+
+    fusion_method = str(hybrid_cfg.get("fusion_method", "rrf")).lower()
+    if fusion_method != "rrf":
+        print(
+            f"[WARN] fusion_method={fusion_method!r} is not implemented in this script; "
+            "fallback to RRF."
+        )
+    if fusion_method == "rrf" and (
+        "embedding_weight" in hybrid_cfg or "bm25_weight" in hybrid_cfg
+    ):
+        print(
+            "[WARN] fusion_method='rrf' uses rank-only fusion; "
+            "embedding_weight/bm25_weight are ignored."
+        )
 
     qa_df = load_qa_mapping(data_cfg["qa_mapping"])
     raw_query_count = len(qa_df)
@@ -316,10 +331,22 @@ def run_three_way_retrieval(args: argparse.Namespace) -> None:
             bm25_records_20.append({**rec_base, "hits": bm_hits_20})
 
             hybrid_50 = _format_hits(
-                rrf_fuse(emb_hits_50, bm_hits_50, rrf_k=retrieval_cfg.get("hybrid", {}).get("rrf_k", 60), missing_rank=retrieval_cfg.get("hybrid", {}).get("missing_rank", 9999), top_k=top_k_train)
+                rrf_fuse(
+                    emb_hits_50,
+                    bm_hits_50,
+                    rrf_k=hybrid_cfg.get("rrf_k", 60),
+                    missing_rank=hybrid_cfg.get("missing_rank", 9999),
+                    top_k=top_k_train,
+                )
             )
             hybrid_20 = _format_hits(
-                rrf_fuse(emb_hits_20, bm_hits_20, rrf_k=retrieval_cfg.get("hybrid", {}).get("rrf_k", 60), missing_rank=retrieval_cfg.get("hybrid", {}).get("missing_rank", 9999), top_k=top_k_eval)
+                rrf_fuse(
+                    emb_hits_20,
+                    bm_hits_20,
+                    rrf_k=hybrid_cfg.get("rrf_k", 60),
+                    missing_rank=hybrid_cfg.get("missing_rank", 9999),
+                    top_k=top_k_eval,
+                )
             )
             hybrid_records_50.append({**rec_base, "hits": hybrid_50})
             hybrid_records_20.append({**rec_base, "hits": hybrid_20})
@@ -339,8 +366,8 @@ def run_three_way_retrieval(args: argparse.Namespace) -> None:
         "params": {
             "top_k_train": top_k_train,
             "top_k_eval": top_k_eval,
-            "rrf_k": retrieval_cfg.get("hybrid", {}).get("rrf_k", 60),
-            "missing_rank": retrieval_cfg.get("hybrid", {}).get("missing_rank", 9999),
+            "rrf_k": hybrid_cfg.get("rrf_k", 60),
+            "missing_rank": hybrid_cfg.get("missing_rank", 9999),
         },
         "input_files": {
             "qa_mapping": data_cfg["qa_mapping"],
