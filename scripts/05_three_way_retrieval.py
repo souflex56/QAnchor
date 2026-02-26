@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage1 三路检索：Embedding + BM25 + Hybrid (RRF)。"""
+"""Stage1 三路检索：Embedding + BM25 + Hybrid (RRF/weighted_sum/max)。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from src.data_loader import load_answers, load_qa_mapping, select_pdf_subset  # 
 from src.chunk_manager import ChunkIndex, load_chunks  # noqa: E402
 from src.embedding_retriever import EmbeddingRetriever  # noqa: E402
 from src.bm25_retriever import BM25Retriever  # noqa: E402
-from src.hybrid_fusion import rrf_fuse  # noqa: E402
+from src.hybrid_fusion import fuse_two_way  # noqa: E402
 
 
 def _pdf_stem(path_str: str) -> str:
@@ -202,18 +202,39 @@ def run_three_way_retrieval(args: argparse.Namespace) -> None:
     hybrid_cfg = retrieval_cfg.get("hybrid", {}) or {}
     stage_cfg = cfg.get("stages", {})
 
-    fusion_method = str(hybrid_cfg.get("fusion_method", "rrf")).lower()
-    if fusion_method != "rrf":
+    configured_fusion_method = str(hybrid_cfg.get("fusion_method", "rrf")).lower()
+    valid_methods = {"rrf", "weighted_sum", "max"}
+    if configured_fusion_method not in valid_methods:
         print(
-            f"[WARN] fusion_method={fusion_method!r} is not implemented in this script; "
-            "fallback to RRF."
+            f"[WARN] fusion_method={configured_fusion_method!r} 非法；"
+            "回退到 fusion_method='rrf'。"
+        )
+    fusion_method = configured_fusion_method if configured_fusion_method in valid_methods else "rrf"
+    embedding_weight = hybrid_cfg.get("embedding_weight")
+    bm25_weight = hybrid_cfg.get("bm25_weight")
+    weights_effective = embedding_weight is not None or bm25_weight is not None
+
+    if fusion_method == "rrf" and weights_effective:
+        print(
+            "[WARN] fusion_method='rrf' 已启用加权RRF："
+            f"embedding_weight={embedding_weight}, bm25_weight={bm25_weight}。"
+        )
+    if fusion_method in {"weighted_sum", "max"} and (
+        "rrf_k" in hybrid_cfg or "missing_rank" in hybrid_cfg
+    ):
+        print(
+            f"[WARN] fusion_method='{fusion_method}' 下，rrf_k/missing_rank 不生效。"
         )
     if fusion_method == "rrf" and (
+        embedding_weight is None and bm25_weight is None
+    ):
+        print("[INFO] fusion_method='rrf' 使用等权融合。")
+    if fusion_method in {"weighted_sum", "max"} and not (
         "embedding_weight" in hybrid_cfg or "bm25_weight" in hybrid_cfg
     ):
         print(
-            "[WARN] fusion_method='rrf' uses rank-only fusion; "
-            "embedding_weight/bm25_weight are ignored."
+            f"[INFO] fusion_method='{fusion_method}' 未显式配置权重，"
+            "使用默认等权 (1.0, 1.0)。"
         )
 
     qa_df = load_qa_mapping(data_cfg["qa_mapping"])
@@ -331,18 +352,24 @@ def run_three_way_retrieval(args: argparse.Namespace) -> None:
             bm25_records_20.append({**rec_base, "hits": bm_hits_20})
 
             hybrid_50 = _format_hits(
-                rrf_fuse(
-                    emb_hits_50,
-                    bm_hits_50,
+                fuse_two_way(
+                    embedding_hits=emb_hits_50,
+                    bm25_hits=bm_hits_50,
+                    fusion_method=fusion_method,
+                    embedding_weight=embedding_weight,
+                    bm25_weight=bm25_weight,
                     rrf_k=hybrid_cfg.get("rrf_k", 60),
                     missing_rank=hybrid_cfg.get("missing_rank", 9999),
                     top_k=top_k_train,
                 )
             )
             hybrid_20 = _format_hits(
-                rrf_fuse(
-                    emb_hits_20,
-                    bm_hits_20,
+                fuse_two_way(
+                    embedding_hits=emb_hits_20,
+                    bm25_hits=bm_hits_20,
+                    fusion_method=fusion_method,
+                    embedding_weight=embedding_weight,
+                    bm25_weight=bm25_weight,
                     rrf_k=hybrid_cfg.get("rrf_k", 60),
                     missing_rank=hybrid_cfg.get("missing_rank", 9999),
                     top_k=top_k_eval,
@@ -351,23 +378,30 @@ def run_three_way_retrieval(args: argparse.Namespace) -> None:
             hybrid_records_50.append({**rec_base, "hits": hybrid_50})
             hybrid_records_20.append({**rec_base, "hits": hybrid_20})
 
+    hybrid_file_prefix = f"hybrid_{fusion_method}"
     output_dir = Path(args.output_dir)
     _write_jsonl(output_dir / f"embedding_top{top_k_train}_{args.stage}.jsonl", emb_records_50)
     _write_jsonl(output_dir / f"bm25_top{top_k_train}_{args.stage}.jsonl", bm25_records_50)
-    _write_jsonl(output_dir / f"hybrid_rrf_top{top_k_train}_{args.stage}.jsonl", hybrid_records_50)
+    _write_jsonl(output_dir / f"{hybrid_file_prefix}_top{top_k_train}_{args.stage}.jsonl", hybrid_records_50)
     _write_jsonl(output_dir / f"embedding_top{top_k_eval}_{args.stage}.jsonl", emb_records_20)
     _write_jsonl(output_dir / f"bm25_top{top_k_eval}_{args.stage}.jsonl", bm25_records_20)
-    _write_jsonl(output_dir / f"hybrid_rrf_top{top_k_eval}_{args.stage}.jsonl", hybrid_records_20)
+    _write_jsonl(output_dir / f"{hybrid_file_prefix}_top{top_k_eval}_{args.stage}.jsonl", hybrid_records_20)
 
     stats = {
         "stage": args.stage,
         "step": "5b",
         "completed_at": datetime.now(timezone(timedelta(hours=8))).isoformat(),
         "params": {
+            "fusion_method_config": configured_fusion_method,
+            "fusion_method_effective": fusion_method,
+            "weights_effective": weights_effective,
+            "score_normalization": "minmax" if fusion_method in {"weighted_sum", "max"} else None,
             "top_k_train": top_k_train,
             "top_k_eval": top_k_eval,
             "rrf_k": hybrid_cfg.get("rrf_k", 60),
             "missing_rank": hybrid_cfg.get("missing_rank", 9999),
+            "embedding_weight": embedding_weight,
+            "bm25_weight": bm25_weight,
         },
         "input_files": {
             "qa_mapping": data_cfg["qa_mapping"],
@@ -388,10 +422,10 @@ def run_three_way_retrieval(args: argparse.Namespace) -> None:
         "output_files": {
             "embedding_top50": str(output_dir / f"embedding_top{top_k_train}_{args.stage}.jsonl"),
             "bm25_top50": str(output_dir / f"bm25_top{top_k_train}_{args.stage}.jsonl"),
-            "hybrid_top50": str(output_dir / f"hybrid_rrf_top{top_k_train}_{args.stage}.jsonl"),
+            "hybrid_top50": str(output_dir / f"{hybrid_file_prefix}_top{top_k_train}_{args.stage}.jsonl"),
             "embedding_top20": str(output_dir / f"embedding_top{top_k_eval}_{args.stage}.jsonl"),
             "bm25_top20": str(output_dir / f"bm25_top{top_k_eval}_{args.stage}.jsonl"),
-            "hybrid_top20": str(output_dir / f"hybrid_rrf_top{top_k_eval}_{args.stage}.jsonl"),
+            "hybrid_top20": str(output_dir / f"{hybrid_file_prefix}_top{top_k_eval}_{args.stage}.jsonl"),
         },
     }
     if args.checkpoint_path:
@@ -406,7 +440,7 @@ def run_three_way_retrieval(args: argparse.Namespace) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="三路检索：Embedding + BM25 + Hybrid (RRF)")
+    parser = argparse.ArgumentParser(description="三路检索：Embedding + BM25 + Hybrid (RRF/weighted_sum/max)")
     parser.add_argument("--stage", type=str, default="stage1", help="Stage name, e.g., stage1")
     parser.add_argument("--config", type=str, default="config/weak_supervision_config.yaml", help="配置文件路径")
     parser.add_argument("--output-dir", type=str, default="data/output/retrieval", help="输出目录")
