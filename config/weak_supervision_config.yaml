@@ -78,16 +78,16 @@ retrieval:
   # 3a-1: BM25
   bm25:
     enabled: true                                # Stage1 必须开启
-    top_k: 50
+    top_k: 50                                    # 仅配置占位；当前脚本实际由 --top-k-train/--top-k-eval 控制
 
   # 3a-2: Hybrid
   hybrid:
-    enabled: true                                # Stage1 必须开启
-    embedding_weight: 0.7
-    bm25_weight: 0.3
-    fusion_method: "rrf"                         # "rrf" | "weighted_sum" | "max"
-    rrf_k: 60
-    missing_rank: 9999
+    enabled: true                                # 是否启用混合融合（embedding + BM25）
+    embedding_weight: 1.0                        # embedding 路权重（用于 rrf / weighted_sum / max）
+    bm25_weight: 1.0                             # BM25 路权重（用于 rrf / weighted_sum / max）
+    fusion_method: "rrf"                         # 融合方法："rrf" | "weighted_sum" | "max"
+    rrf_k: 60                                    # RRF 平滑常数（仅 fusion_method=rrf 生效）
+    missing_rank: 9999                           # RRF 下单路缺失时的默认排名（仅 fusion_method=rrf 生效）
 
 teacher:
   model: "deepseek-chat"
