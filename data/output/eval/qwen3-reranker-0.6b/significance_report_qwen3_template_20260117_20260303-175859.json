@@ -1,0 +1,60 @@
+{
+  "per_query_path": "data/output/eval/qwen3-reranker-0.6b/per_query_scores_qwen3_template_20260117.jsonl",
+  "baseline": "embedding_only",
+  "treatment": "hybrid_rrf",
+  "sample_count": 50,
+  "bootstrap_samples": 20000,
+  "permutation_samples": 20000,
+  "seed": 42,
+  "metrics": {
+    "mrr@10": {
+      "baseline_mean": 0.4115,
+      "treatment_mean": 0.5756349206349206,
+      "abs_delta": 0.16413492063492063,
+      "rel_delta_vs_baseline": 0.39886979498158115,
+      "improved_queries": 21,
+      "degraded_queries": 2,
+      "tied_queries": 27,
+      "bootstrap_ci": {
+        "alpha": 0.05,
+        "low": 0.08894444444444444,
+        "high": 0.2412777777777778,
+        "p_diff_le_zero": 5e-05
+      },
+      "paired_signflip_p_two_sided": 0.0
+    },
+    "ndcg@10": {
+      "baseline_mean": 0.5340780345883679,
+      "treatment_mean": 0.6778385311003877,
+      "abs_delta": 0.14376049651201991,
+      "rel_delta_vs_baseline": 0.2691750778007956,
+      "improved_queries": 34,
+      "degraded_queries": 10,
+      "tied_queries": 6,
+      "bootstrap_ci": {
+        "alpha": 0.05,
+        "low": 0.08143107147877414,
+        "high": 0.20667337627635182,
+        "p_diff_le_zero": 0.0
+      },
+      "paired_signflip_p_two_sided": 5e-05
+    },
+    "p@10": {
+      "baseline_mean": 0.14200000000000002,
+      "treatment_mean": 0.172,
+      "abs_delta": 0.03,
+      "rel_delta_vs_baseline": 0.21126760563380279,
+      "improved_queries": 16,
+      "degraded_queries": 7,
+      "tied_queries": 27,
+      "bootstrap_ci": {
+        "alpha": 0.05,
+        "low": 0.002,
+        "high": 0.06,
+        "p_diff_le_zero": 0.01735
+      },
+      "paired_signflip_p_two_sided": 0.0518
+    }
+  },
+  "created_at": "20260303-175900"
+}

@@ -19,6 +19,7 @@ QAnchor 是一个端到端的检索优化闭环：在缺乏高质量标注数据
 本次最优为 **Qwen3-Reranker-0.6B-seq-cls Finetuned**。  `max_length` 为 reranker 输入序列的最大长度（Query + Document 拼接后的 token 序列，超出会截断）。
 
 完整报告：`data/output/eval/stage1_reranker_comparison_report_20260118_v2.md`
+统计显著性报告（配对 bootstrap / sign-flip）：`data/output/eval/qwen3-reranker-0.6b/significance_report_*.md`
 ## 项目目标与范围
 QAnchor 是一个弱监督 Query–Chunk 训练数据生成与检索排序 pipeline，用于支撑 ZenSeeker（A 股财报问答系统）的检索与排序能力。
 
@@ -323,6 +324,20 @@ python scripts/10_evaluate.py \
 ```
 输出：`data/output/eval/`
 
+### 8.1 统计显著性验证（推荐）
+> 用 per-query 结果做配对 bootstrap / sign-flip，验证增益不是随机波动。
+
+```bash
+python scripts/10a_eval_significance.py \
+  --per-query data/output/eval/qwen3-reranker-0.6b/per_query_scores_qwen3_template_20260117.jsonl \
+  --baseline embedding_only \
+  --treatment hybrid_rrf \
+  --bootstrap-samples 20000 \
+  --permutation-samples 20000 \
+  --seed 42
+```
+输出：`data/output/eval/qwen3-reranker-0.6b/significance_report_*.json|md`
+
 ### 9. 复现一致性检查（必做）
 - 关键配置：`config/weak_supervision_config.yaml`、`config/zenparse_config.yaml`、`value-test.yml`
 - 核对指标：`data/output/eval/metrics_comparison_${STAGE}.json`、`data/output/eval/eval_report_${STAGE}.md`
@@ -340,7 +355,15 @@ python scripts/10_evaluate.py \
 - **指标结果**：`data/output/eval/metrics_comparison_*.json`
 - **评测配置**：`data/output/eval/eval_config_*.json`
 - **对照报告**：`data/output/eval/stage1_reranker_comparison_report_20260118_v2.md`
+- **统计显著性报告**：`data/output/eval/qwen3-reranker-0.6b/significance_report_*.json|md`
 - **Reverse Mining 统计**：`data/output/mining/mining_stats_stage1.json`
+
+### 统计稳健性补充（embedding_only vs hybrid_rrf）
+- 数据来源：`per_query_scores_qwen3_template_20260117.jsonl` + `significance_report_qwen3_template_20260117_20260303-175859.md`
+- **MRR@10**：`0.4115 -> 0.5756`（`+39.89%`），95% CI `[0.0889, 0.2413]`，显著为正
+- **NDCG@10**：`+26.92%`，95% CI `[0.0814, 0.2067]`，显著为正
+- **P@10**：`+21.13%`，提升为正，但配对 sign-flip `p=0.0518`（边界显著）
+- 结论：`hybrid_rrf` 对 `embedding_only` 的提升在 **MRR/NDCG 维度统计稳健**；P@10 提升趋势存在但证据强度相对弱
 
 ---
 
@@ -370,7 +393,7 @@ python scripts/10_evaluate.py \
   - `TripletCollator` 组织候选：`candidates = [pos_text] + neg_texts`，并记录 `group_sizes`。  
   - `ListwiseTrainer.compute_loss`：`loss_i = -torch.log_softmax(group_scores, dim=0)[0]`，index 0 即正例。  
 - **Q：你如何证明增益是真的？**  
-  **A：Gold Eval + 多模型裁决。**Gemini/Qwen/Codex 投票裁决后评测，MRR@10 从 0.6115 提升到 0.7758（+26.9%），对照路径与指标可复现。  
+  **A：两层证据。**先看同口径 Gold Eval：`embedding_only -> hybrid_rrf` 的 MRR@10 从 0.4115 到 0.5756（+39.9%），且 `unjudged_rate=0`。再看配对统计报告：MRR/NDCG 的 bootstrap 95%CI 均为正，说明不是随机抖动；P@10 也上升，但显著性更边界。  
 - **Q：工程约束下怎么保证检索质量？**  
   **A：限定同文档检索 + Embedding/BM25/RRF 三路召回。**避免跨 PDF 噪声，同时提升召回覆盖与精度上限。  
 - **Q：为什么要做 parent/child 分块？**  
@@ -391,3 +414,13 @@ python scripts/10_evaluate.py \
   **A：分两层阈值过滤。**Reverse Mining 阶段用 confidence≥0.5 判正例，训练准备阶段再以 confidence≥0.7 过滤噪声样本。  
 - **Q：Qwen3 和 BGE 怎么取舍？**  
   **A：性能 vs 资源的权衡。**Qwen3-768 在本次评测中 MRR 最高；BGE-512 在资源受限时更稳妥（性能接近、推理成本低）。  
+
+---
+
+## 🔭 Future Work（尚未在主线评测脚本落地）
+- **A1 数据去噪（CE 复审）**：对“规则未匹配”的候选再做 Cross-Encoder 复核，隔离 uncertain 样本，输出更干净的 `pos/verified_neg`，减少假 Hard Negative 污染。
+- **A2 Hard Negative 策略升级**：在当前“检索排名选负例”之外，引入混合策略 / Curriculum / Online Mining，让负例难度随模型能力动态提升。
+- **B1 `unjudged_rate>0` 敏感性分析**：当存在未标注候选时，分别给出下界（全负）/先验场景/上界（全正）区间，而不是只报单点分数。
+- **B2 跨季度稳定性评估**：按 query 类型与时间切片做 out-of-time 分层评测，结合滚动窗口与季度 CI，防止“单次评测撞运气”。
+
+完整路线图与实施细节见：`docs/future_work.md`
