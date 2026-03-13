@@ -1,584 +1,289 @@
-# Future Work：检索训练与评测稳健性路线图
+# Future Work：QAnchor 下一步路线图
 
 ## 概述
 
-本文档将 QAnchor 的后续工作拆分为两条主线：
+QAnchor 当前已跑通"弱监督挖掘 → 训练 → 评测"的完整闭环，但有三个层面的问题还没解决：
 
-- **A. 检索与训练数据质量方向**（Hard Negative / 数据去噪）
-- **B. 评测与评估稳健性方向**（统计显著性 / unjudged 敏感性 / 跨季度稳定性）
+1. **上游数据有噪声**：用来自动标注正例的规则匹配器（answer matcher）还不够精准——短数字容易误命中，年份容易混淆，导致一部分真正的正例被当成负例送去训练，悄悄污染了模型。
+2. **负例选取策略粗糙**：目前直接用检索排名靠前但没被规则匹配到的样本当负例，在上游噪声未消除前这套策略本身就不可靠，升级也没有意义。
+3. **评测结论不够严谨**：现在只报点指标，没有不确定性边界；当存在未标注候选或只做了单次评测时，结论可能被过度解读。
 
-其中 A 方向关注“如何把模型训练得更好”，B 方向关注“如何更严谨地证明模型确实变好”。
+对应地，后续工作分三条主线，**必须按顺序推进**：
 
----
+- **A. 数据质量基础设施**：先修好 matcher，再用 Cross-Encoder 补充高风险复审，输出更干净的训练样本。
+- **B. Hard Negative 策略升级**：A 方向稳定后，再逐步引入更智能的负例选取方式。
+- **C. 评测稳健性**：建立显著性分析、不确定性边界和跨季度稳定性监控，让每一个结论都有可信边界。
 
-## A. 检索与训练数据质量方向（Hard Negative）
+这三条主线不是一次性流水线。如果 C（评测稳健性）发现了系统性问题（比如评测结论不稳定），应该回头检查 A（数据质量）方向，而不是继续往前推。
 
-### A.1 改进路线图
+详细执行规格（脚本、参数、样本设计、judge schema）见 [`../memory-bank/future-2dos/answer-matcher-2dos.md`](../memory-bank/future-2dos/answer-matcher-2dos.md)。本文件只记录"做什么、为什么、怎么算完成、出问题怎么办"。
 
-**核心思路**: 数据质量改进 → Hard Negative 策略优化 → 训练策略提升
-
-```
-阶段0: CE 复审（数据去噪）     ← 解决假Hard Negative问题
-  ├─ Cross-Encoder 三态分类
-  ├─ 隔离不确定样本
-  └─ 输出纯净的 pos/verified_neg
-
-阶段1: 混合策略（推荐首选）
-  ├─ 50% 检索器排名 + 50% 模型置信度
-  └─ 成本低，见效快
-
-阶段2: Curriculum Learning
-  ├─ 训练早期用检索器方法
-  └─ 训练后期用模型方法
-
-阶段3: Online Hard Negative Mining
-  ├─ 每个 batch 动态选择
-  └─ 成本高，SOTA 效果
-```
-
-**实施顺序**: 必须先完成阶段0（数据去噪），再考虑阶段1-3（Hard Negative策略）。数据质量是基础。
+> **结论措辞约定**：本文所有"效果"表述均按 `proxy-grounded`（基于 LLM proxy labels）或 `based on LLM consensus` 口径，未经闭环人工复核前不声称"已验证"或承诺精确的 uplift 数字。`verified_negative` 等内部标签名不受此限制。
 
 ---
 
-### A.2 当前方法评估
+## A. 数据质量基础设施
 
-QAnchor当前使用**基于检索排名的Hard Negative选择**：
+> **本阶段目标说明**：目前的 matcher 主要依靠表层匹配来判断 "chunk 是否包含答案"，这导致了两类结构性问题。如果不能优先解决这两类问题，后续的负例选取、模型训练以及评测结论的准确性都会受到影响。因此，修正这两类错误是所有后续步骤的基础。
 
-```python
-# scripts/06_reverse_mining.py:209
-neg_selected = neg_candidates[:neg_ratio * len(pos_chunks)]
-```
+### A.0 Matcher 校准（优先级：最高）
 
-**逻辑**：选择检索器排名高但不是正例的样本
+**问题**
 
-**具体实现**：
-1. 遍历Top50检索结果（按score从高到低排序）
-2. 使用规则匹配识别正例
-3. 未匹配的样本进入`neg_candidates`（保持原始排序）
-4. 取`neg_candidates`的前n个作为Hard Negatives
+matcher 目前有两类主要误判：
 
----
+- **短数字裸命中**：比如答案是 `15`，chunk 里有任意 `15` 就被标为正例，不管语境是不是对的。
+- **年份错配**：比如 query 问的是 2023 年营收，但 chunk 里写的是 2022 年 120 亿，`120 亿` 被命中了，年份却是错的。
 
-### A.3 业界方法对比
+这两类问题会把"答案表面值匹配但语境完全不对"的 chunk 误标为正例，或者把真正的正例压低分数变成负例，直接污染训练数据。
 
-| 方法 | 逻辑 | 计算成本 | 工业界采用 | 学术界采用 | 代表工作 |
-|------|------|----------|-----------|-----------|---------|
-| **方法1: 检索排名**（QAnchor当前） | 选检索器排名高但非正例的样本 | 1x | ⭐⭐⭐⭐⭐ | ⭐⭐ | Contriever, E5, BGE |
-| **方法2: 模型置信度** | 选当前模型最容易误判的样本 | 2x | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ANCE, RocketQA |
-| **方法3: Loss值** | 选loss值最大的样本（决策边界） | 3x | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | OHEM, Dense Retriever |
+**具体例子**
 
----
+| 角色 | 内容 |
+|------|------|
+| Query | `2023 年营收是多少？` |
+| Answer surface（匹配对象） | `120 亿`（从标准答案中提取的 key_value） |
+| Chunk | `2022 年营收 120 亿` |
+| 旧逻辑 | `120 亿` 命中 → 判为正例 ✗ |
+| 新逻辑应该做的 | 检测到 chunk 邻域年份是 2022 而 query 年份是 2023 → 降分或不判正 |
 
-### A.4 当前方法的优缺点
+**做什么**
 
-### ✅ 优点
+建立独立的校准链路，在不影响主线的情况下验证改动效果，确认没有问题再回注主线。MVP 只新增两个惩罚项：`short_number_penalty`（短数字无锚点时降分）和 `year_conflict_penalty`（年份冲突时降分）。用 proxy labels（LLM 共识打分）+ 反事实样本来评估改动，不只看单点指标。
 
-1. **简单高效**：不需要额外的模型推理，数据预处理阶段完成
-2. **理论基础**：检索器本身就是训练好的相似度模型（BM25/Embedding）
-3. **工业验证**：BGE-M3/M3/M3等主流检索模型都使用此方法
-4. **可解释性强**：Hard Negative的定义清晰（检索器认为相关但实际不相关）
+**怎么算完成**
 
-### ❌ 缺点
+- 短数字误命中和年份错配两类问题方向上有改善。
+- 反事实样本（比如把 chunk 年份换成错误年份）能稳定触发降分，白名单术语（如"非经常性损益"）不被误伤。
+- 接入主线后训练样本规模与覆盖不出现明显塌缩。
+- 下游 Gold Eval 的 MRR/NDCG 不回退。
 
-1. **不是从重排模型视角选Hard Negative**
-   - 用的是检索器（BM25/Embedding）的排序
-   - 但训练的是重排模型（Reranker）
-   - 两个模型的"难易判断标准"可能不一致
+**出问题怎么办**
 
-   **例子**：
-   ```
-   Query: "宁德时代2023年动力电池装机量"
-
-   Rank 1: "2022年装机量120GWh"
-   → 检索器认为最相关（关键词完全匹配）
-   → 但对重排模型可能很简单（一眼看出年份错误）
-
-   Rank 28: "2023年动力电池装机量165GWh"
-   → 检索器排后面（关键词分散）
-   → 但这才是真正的正例
-   ```
-
-2. **没有利用训练过程中的反馈**
-   - Hard Negative选择是静态的（离线生成）
-   - 随着模型训练，"hard"的定义应该动态改变
-
-   ```
-   Epoch 1: "2022年营收" 可能是hard negative（模型还不懂年份）
-   Epoch 5: "2022年营收" 可能太简单了（模型已学会）
-   ```
-
-3. **可能选到"假Hard Negative"**（⚠️ **核心问题**）
-   - 如果Rank1-10都是正例，Rank11-13就成了Hard Negative
-   - 但Rank11可能确实是正确答案，只是标注/匹配问题没被识别
-
-   **例子**：
-   ```
-   Query: "宁德时代2023年动力电池装机量"
-   Answer: "165GWh"
-
-   Top-10 检索结果：
-   Rank 1-3: "2022年...120GWh" → 规则匹配到 "2022年" → 正例
-   Rank 4-7: "2023年...165GWh" → 规则未匹配（关键词分散）→ 被误判为负例！
-   Rank 8-10: "2021年...95GWh" → 规则匹配 → 正例
-
-   结果：Rank4-7的真正正例被当作Hard Negative训练！
-   ```
-
-   **影响**：
-   - 模型学到错误信号（"正确答案"被当作负例）
-   - 严重污染训练数据
-   - 模型性能上限被锁死
+- 病灶方向没有改善、反事实样本无法降分、或样本覆盖率塌缩：回头检查校准集设计和 penalty 逻辑，不要直接推进到 CE 阶段。
+- 如果后续评测（C 方向）发现新的系统性问题，也应优先回到这里复查，而不是先调 B 方向的参数。
 
 ---
 
-## 阶段0: Cross-Encoder 复审（数据去噪）
+### A.1 CE 高风险复审（依赖 A.0）
 
-**目标**: 解决"假Hard Negative"问题，输出纯净的训练数据。
+**问题**
 
-### 核心思想
+即使 A.0 改好了 matcher，仍然有一部分高排名候选 chunk 会"漏网"——matcher 没判正，但它们可能真的包含答案，只是规则没覆盖到。如果直接把这些候选扔进负例池，等于用潜在正例训练模型"这个不对"，是假 hard negative。
 
-使用 Cross-Encoder (CE) 对规则未匹配的候选进行**三态分类**：
+> CE（Cross-Encoder）是一个能理解 query + chunk 语义关系的模型，比规则匹配更有理解力，适合做这种"高风险样本的二次审核"。
 
-| 状态 | 定义 | 处理方式 |
-|------|------|---------|
-| **Positive** | 规则匹配成功 | 加入正例池 |
-| **Uncertain** | 规则未匹配 + CE分数 ≥ 0.75 | **隔离**，不参与训练 |
-| **Verified Negative** | 规则未匹配 + CE分数 ≤ 0.35 | 加入负例池（已验证） |
-| **Unreviewed Negative** | 规则未匹配 + Rank > 10 | 加入负例池（低风险） |
+**CE 的职责边界**
 
-### 实现逻辑
+CE 不是主判决器，也不是替代 matcher。它只处理"matcher 已经看过但没判正、而且风险较高（rank 靠前或有风险标记）"的候选。
 
-```python
-def classify_with_ce(rule_matched, ce_score, rank):
-    """三态分类逻辑"""
-    if rule_matched:
-        return "positive"
-    elif ce_score >= 0.75:  # CE认为高度相关
-        return "uncertain"  # 隔离，可能是假负例
-    elif ce_score <= 0.35:  # CE明确不相关
-        return "verified_negative"
-    elif rank > 10:  # 低排名，不太可能是正例
-        return "unreviewed_negative"
-    else:
-        return "unreviewed_negative"  # 默认负例
-```
+CE 输出三个专属 label：
 
-### 数据流变化
+| CE 输出 | 含义 | 集成层处理 |
+|---------|------|-----------|
+| `ce_positive` | CE 认为这是正例 | 救回，加入正例池 |
+| `ce_uncertain` | CE 不确定 | 隔离，不参与训练 |
+| `ce_negative` | CE 确认不相关 | 加入负例池（`verified_negative`） |
+| （未触发 CE） | 低风险候选，matcher 未判正也未进入 CE | 保留为 `unreviewed_negative` |
 
-**Before (2-pool)**:
-```
-规则匹配 → Positive
-规则未匹配 → Negative (直接训练)
-```
+**做什么**
 
-**After (4-pool)**:
-```
-规则匹配 → Positive
-规则未匹配 → CE复审 → Uncertain (隔离)
-                      → Verified Negative
-                      → Unreviewed Negative
-```
+只对 matcher 未判正且风险较高（rank 靠前或有风险标记）的候选触发 CE 复审。保留 matcher 版本、CE review 状态与 calibration run ID 等元数据，以便回溯和对比。
 
-### 预期效果
+**怎么算完成**
 
-| 指标 | Before | After | 提升 |
-|------|--------|-------|------|
-| 假Hard Negative率 | ~15-30% | <5% | ⬇️ 80%+ |
-| 训练数据质量 | 中等 | 高 | ⬆️ 显著 |
-| 模型性能上限 | 受限 | 解锁 | ⬆️ 5-10% |
+- 高风险漏判样本减少，正例覆盖没有出现明显塌缩。
+- CE review 结果可追溯，`uncertain` 池比例在合理范围内（异常膨胀说明触发条件过宽）。
+- 接入后下游训练与评测没有明显回退。
 
-### 实施成本
+**出问题怎么办**
 
-- **计算成本**: +1x（CE模型推理，可批处理优化）
-- **实施难度**: ⭐⭐（中等）
-- **风险**: 低（只隔离不确定样本，不影响原有正负例）
+- 如果 `uncertain` 池异常膨胀或 `positive` 池明显缩小：先收窄 CE 触发条件。
+- 如果问题来自 matcher 本身（误判边界还不稳）：回到 A.0 重新校准，不要试图用调 CE 阈值来掩盖上游问题。
 
 ---
 
-## 阶段1: 混合策略（低成本，推荐首选）
+### A.2 暂不纳入 MVP 的扩展方向
 
-### 方案1：混合策略（成本低，推荐首选）
+以下方向在长期上是有价值的，但必须等 A.0/A.1 稳定后再考虑，否则只会增加复杂度而不能确定收益来自哪里：
 
-**思路**：50%用检索器排名，50%用模型置信度
+- 字段冲突正式惩罚（比如 chunk 里出现了竞争字段的锚点）
+- 显式否定规则正式入主链（"不包括"、"并非"等语言的否定识别）
+- CE 与 matcher 分数的加权融合
+- 连续置信度重构与更复杂聚合器
+- Type2+ 问题扩展（目前只处理 Type1）
+- 人工复核集接入（目前 proxy labels 是 LLM 生成，非人工）
 
-```python
-def select_hybrids_hard_negatives(query, pos_chunks, neg_candidates, model, n=3):
-    """混合策略：结合检索器排名和模型置信度"""
-    hard_negatives = []
-
-    # 50%用检索器方法（当前方法）
-    retrieval_ratio = 0.5
-    n_retrieval = int(n * retrieval_ratio)
-    hard_negatives.extend(neg_candidates[:n_retrieval])
-
-    # 50%用模型置信度方法
-    n_model = n - n_retrieval
-    # 计算模型对每个负例的预测分数
-    model_scores = []
-    for neg in neg_candidates:
-        with torch.no_grad():
-            score = model.predict(query, pos_chunks[0], neg)
-        model_scores.append((score, neg))
-
-    # 选模型分数最高的（模型认为最难区分的）
-    model_scores.sort(key=lambda x: x[0], reverse=True)
-    hard_negatives.extend([neg for score, neg in model_scores[:n_model]])
-
-    return hard_negatives
-```
-
-**优点**：
-- 计算成本增加不大（~1.5x）
-- 结合了检索器优势和模型视角
-- 实现相对简单
-- 可以调节hybrid_ratio来平衡两种方法
-
-**缺点**：
-- 仍然需要额外的模型推理
-- 需要仔细调参（retrieval_ratio）
+**什么时候可以推进**：A.0/A.1 的发布 gate 稳定通过，并且至少做过一轮完整的主链验证与失败复盘之后。
 
 ---
 
-### 方案2：动态Curriculum（中等成本）
+## B. Hard Negative 策略升级
 
-**思路**：训练早期用检索器排名，训练后期用模型置信度
+>  **本阶段目标说明**：当前负例直接取"检索排名靠前但 matcher 没判正"的 chunk，是静态离线的。随着模型能力提升，这批负例对模型来说会越来越简单；而且如果上游数据还有噪声，选出来的"负例"里可能混有真正的正例。这一部分的目标是让负例选取更智能、随训练过程动态演进。
+>
+> **前提**：A.0/A.1 已稳定。如果数据质量问题没解决，B 方向的改进带来的收益不可解释。
 
-```python
-def select_curriculum_hard_negatives(query, pos_chunks, neg_candidates, model,
-                                     n=3, epoch=0, warmup_epochs=3):
-    """Curriculum策略：随训练进度调整难度"""
-    if epoch < warmup_epochs:
-        # 早期：用检索器方法（简单负例为主）
-        return neg_candidates[:n]
-    else:
-        # 后期：用模型方法（困难负例为主）
-        model_scores = []
-        for neg in neg_candidates:
-            with torch.no_grad():
-                score = model.predict(query, pos_chunks[0], neg)
-            model_scores.append((score, neg))
+### B.1 混合策略（检索排名 + 模型置信度）
 
-        model_scores.sort(key=lambda x: x[0], reverse=True)
-        return [neg for score, neg in model_scores[:n]]
-```
+**问题**：当前只用检索器排名选负例，但检索器和 reranker 的"难易判断标准"不同——检索器认为很相关的样本，reranker 可能一眼看出是错的。
 
-**优点**：
-- 符合Curriculum Learning理论（从简单到困难）
-- 随模型能力自动调整难度
-- 训练更稳定，收敛更快
+**做什么**：在保留检索排名信号的同时，引入一部分"reranker 当前最难区分的"样本，作为低成本首选升级路线。
 
-**缺点**：
-- 需要定义warmup期
-- 早期可能浪费一些hard negatives
+**怎么算完成**：混合策略在主评测上比纯检索排名稳定，且没有明显增加噪声负例。
+
+**出问题怎么办**：如果收益不稳定或 run 间方差大，先回查 A.0/A.1 数据质量，再决定是否退回纯检索排名基线。
 
 ---
 
-### 方案3：Online Hard Negative Mining（高成本，最先进）
+### B.2 Curriculum Learning（由易到难）
 
-**思路**：每个batch都重新计算loss，选loss最大的样本
+**问题**：训练初期模型能力弱，复杂负例会把它搞乱；训练后期模型已经学会的简单负例又没有贡献。用固定难度的负例贯穿整个训练，往往既不高效也不稳定。
 
-```python
-def select_online_hard_negatives(query, pos, neg_candidates, model, n=3):
-    """Online Hard Example Mining：选loss最大的"""
-    losses = []
+**做什么**：训练早期用检索排名式负例（更稳定），后期再逐步引入模型置信度驱动的困难样本。
 
-    for neg in neg_candidates:
-        # 计算该负例的loss
-        loss = model.compute_loss(query, pos, neg)
-        losses.append((loss.item(), neg))
+**怎么算完成**：训练曲线更平滑，后期 hard negatives 能带来额外收益而不是额外噪声。
 
-    # 选loss最大的n个（位于决策边界附近）
-    losses.sort(key=lambda x: x[0], reverse=True)
-    return [neg for loss, neg in losses[:n]]
-
-# 在训练循环中使用
-for epoch in range(num_epochs):
-    for batch in dataloader:
-        query, pos, neg_candidates = batch
-
-        # 每个batch动态选择hard negatives
-        hard_negs = select_online_hard_negatives(
-            query, pos, neg_candidates, model, n=3
-        )
-
-        # 用选定的hard negatives计算最终loss
-        loss = model.compute_loss(query, pos, hard_negs)
-        loss.backward()
-        optimizer.step()
-```
-
-**优点**：
-- 精确打击模型学不好的边界样本
-- 理论基础扎实（对比学习loss反映样本难度）
-- 学术界认可度高（顶会论文常用）
-
-**缺点**：
-- 计算成本高（~3x，每个负例都要算loss）
-- 可能不稳定（loss波动大）
-- 实现复杂，需要修改训练循环
+**出问题怎么办**：如果 warmup 后性能波动明显，退回 B.1，避免在训练调度上引入不必要复杂度。
 
 ---
 
-## 实施建议
+### B.3 Online Hard Negative Mining（每 batch 动态选择）
 
-### 按场景推荐
+**问题**：离线生成的负例是静态的，无法随训练实时更新"什么对当前模型最难"。
 
-| 场景 | 推荐方案 | 理由 | 预期收益 |
-|------|----------|------|---------|
-| **数据质量差** | **阶段0（CE复审）** | 必须先去噪，否则所有策略都受污染 | +5-15% MRR |
-| **快速验证/上线** | 阶段0 + 当前方法 | 基础数据质量保证 | baseline |
-| **写顶会论文** | 阶段0 + 阶段2或阶段3 | 完整pipeline，SOTA效果 | +8-20% MRR |
-| **大规模生产** | 阶段0 + 阶段1混合 | 平衡效果和成本 | +7-12% MRR |
-| **资源受限** | 阶段0 + curriculum | 数据质量优先 + 低成本改进 | +6-10% MRR |
+**做什么**：每个 batch 都重新计算 loss，选 loss 最大的候选作为 hard negatives，最接近"实时打击决策边界"的理想形态。但计算成本和训练不稳定性也最高，只在前两步稳定后才值得探索。
 
-### 实施优先级
+**怎么算完成**：在线策略带来的收益在多次实验中可复现，且计算成本可接受。
 
-**阶段0（必做，数据质量基础）**：
-- 实现CE复审，三态分类
-- 隔离不确定样本（Uncertain）
-- 输出纯净的 pos/verified_neg 数据
-- **验证**: 检查uncertain比例是否 >10%（说明数据污染严重）
-
-**阶段1（低成本，快速验证）**：
-- 在阶段0基础上，实现混合策略
-- 设置hybrid_ratio=0.5（50:50）
-- 运行小规模实验验证效果
-
-**阶段2（中期，稳定改进）**：
-- 如果阶段1有效，实施Curriculum
-- 调优warmup_epochs参数
-- 进行完整训练和评测
-
-**阶段3（长期，探索前沿）**：
-- 如果需要SOTA效果，实施Online Mining
-- 配合其他优化（如更大的batch size）
+**出问题怎么办**：如果训练波动显著上升或收益无法覆盖成本，退回 B.1/B.2。
 
 ---
 
-## 代码实现位置
+## C. 评测稳健性
 
-如果要实现改进，主要需要修改以下文件：
+> **本阶段目标说明**：当前只报点指标（MRR@10 / NDCG@10 / P@10），没有不确定性边界。当存在未标注候选（`unjudged`）或只做了单次快照评测时，结论可能被过度解读。这一部分的目标是让每个结论都有可信边界，同时在发现系统性问题时及时触发回推。
 
-### 1. `scripts/06_reverse_mining.py`
+### C.1 配对显著性分析固化（10a 常规化）
 
-**当前代码（第209行）**：
-```python
-neg_selected = neg_candidates[:neg_ratio * len(pos_chunks)]
-```
+**目标**：避免"模型提升了 2 个点"这种结论其实只是随机波动，把显著性分析变成每次评测的默认输出。
 
-**改进代码**：
-```python
-# 新增参数
-parser.add_argument("--hard-neg-strategy", type=str, default="retrieval",
-                    choices=["retrieval", "hybrid", "curriculum", "online"])
-parser.add_argument("--hybrid-ratio", type=float, default=0.5)
+**核心设计**
 
-# 在mine_triplets函数中实现新策略
-if strategy == "retrieval":
-    neg_selected = neg_candidates[:n]
-elif strategy == "hybrid":
-    neg_selected = select_hybrid_hard_negatives(...)
-# ...
-```
+1. 固化 per-query 评测产物，保持 baseline 与对照配置一致。
+2. 每次主评测同时输出点估计与配对 bootstrap / sign-flip 显著性结果。
+3. 当主指标与显著性层方向冲突时，自动降格结论措辞（policy gate，无需人工决策）；是否进一步回推 A.0/A.1 复校准，由评测 owner 决定。
 
-### 2. `scripts/09_train_reranker.py`
+**验收标准**
 
-**需要添加**：
-- 动态Hard Negative选择逻辑
-- Online Hard Negative Mining支持
-- Curriculum Learning的epoch判断
+- 常规评测报告默认包含主指标与显著性层。
+- 报告能区分"可信趋势"与"证据不足的趋势"。
 
-**示例代码**：
-```python
-# 在训练循环中
-for epoch in range(args.epochs):
-    for batch in train_dataloader:
-        if args.hard_neg_strategy == "online":
-            # 每个batch动态选择
-            hard_negs = select_online_hard_negatives(...)
-        else:
-            # 使用预先生成的hard negatives
-            hard_negs = batch['negatives']
+**失败信号与回推**
 
-        loss = model(query, pos, hard_negs)
-        loss.backward()
-```
-
-### 3. `config/weak_supervision_config.yaml`
-
-**新增配置项**：
-```yaml
-hard_negative:
-  strategy: "hybrid"  # retrieval | hybrid | curriculum | online
-
-  # 混合策略参数
-  hybrid_ratio: 0.5  # 检索器方法占比
-
-  # Curriculum策略参数
-  curriculum_warmup: 3  # 使用检索器方法的epoch数
-
-  # Online策略参数
-  online_sample_size: 20  # 从多少个候选中选
-```
+- 只报点指标、不报不确定性边界：不符合本节验收标准。
+- 主指标与显著性方向冲突：先收窄结论，再检查评测切片和 A.0/A.1 数据质量。
 
 ---
 
-## 预期效果
+### C.2 `unjudged_rate > 0` 敏感性分析（10b）
 
-### MRR提升预估
+**目标**：当评测集里存在"没有被标注"的候选时，单点指标会高估结论稳定性。这个方向要给出有界的结论，而不是假装确定。
 
-| 方案 | 预期MRR@10提升 | 计算成本增加 | 实施难度 | 风险 |
-|------|---------------|-------------|---------|------|
-| 当前方法 | baseline (0.7758) | 0x | ⭐ | 低 |
-| **阶段0（CE复审）** | **+5-10%** | +1x | ⭐⭐ | 低 |
-| 阶段1（混合） | +7-12% | +1.5x | ⭐⭐ | 低 |
-| 阶段2（Curriculum） | +8-15% | +2x | ⭐⭐⭐ | 中 |
-| 阶段3（Online） | +10-20% | +3x | ⭐⭐⭐⭐ | 高 |
+**核心设计**
 
-**注**: 阶段0的收益是独立的，可与阶段1-3叠加。
+1. **下界**：将所有 `unjudged` 候选视作 non-relevant（保守估计，最坏情况）。
+2. **先验场景**：按历史相关率对 `unjudged` 进行概率分配（中性估计）。
+3. **上界**：将所有 `unjudged` 候选视作 relevant（乐观估计，最好情况）。
 
-### 其他潜在收益
+**验收标准**
 
-1. **更好的泛化能力**：模型在难样本上训练，泛化到真实场景时表现更好
-2. **更快的收敛**：Curriculum方法可以加速训练收敛
-3. **更少的训练轮次**：Online Mining可能减少需要的总epoch数
+- 每次 `unjudged > 0`，都能输出三场景区间与结论方向。
+- 报告能识别"结论是否高度依赖场景假设"。
 
----
+**失败信号与回推**
 
-## B. 评测与评估稳健性方向（Eval）
-
-### B.1 当前基线（已具备）
-
-当前主线已经具备以下能力：
-
-- `scripts/10_evaluate.py`：输出 `MRR@10 / NDCG@10 / P@10` 与 `unjudged_rate`
-- `scripts/10a_eval_significance.py`：基于 `per_query_scores` 做配对 bootstrap / sign-flip 显著性分析
-- 对应产物目录：`data/output/eval/`，可支持“分数 + 统计稳健性”的两层结论
-
-### B.2 Future Work-1：unjudged_rate>0 敏感性分析（10b 方向）
-
-**目标**：当 `unjudged_rate` 非零时，不再只给单点指标，而是输出有界不确定性结论。  
-
-**核心方法**：
-
-1. **下界场景**：将 unjudged 全部视作 non-relevant（保守估计）
-2. **先验场景**：按先验相关率对 unjudged 进行分配（中性估计）
-3. **上界场景**：将 unjudged 全部视作 relevant（乐观估计）
-
-**验收标准**：
-
-- 三种场景下都输出 `delta` 区间与方向；
-- 若区间在主要场景仍整体 > 0，则增益结论可继续成立；
-- 报告产物落地到：`data/output/eval/**/unjudged_sensitivity_*.json|md`。
-
-### B.3 Future Work-2：跨季度稳定性评估（10c 方向）
-
-**目标**：避免“一次评测撞运气”，把离线评测从单次快照升级为时间序列体检。  
-
-**核心设计**：
-
-1. **季度切分**：按季度构建评测切片（out-of-time）
-2. **分层评测**：按 query 类型（字段类/数字类/长证据类等）分层
-3. **滚动窗口**：跟踪 `MRR/NDCG/P@10` 及其置信区间趋势
-
-**验收标准**：
-
-- 总体指标和关键分层指标都可追溯；
-- 报告能识别“总体提升但某分层回撤”的情况；
-- 报告产物落地到：`data/output/eval/stability/quarterly_*.json|md`。
-
-### B.4 建议落地顺序（Eval 方向）
-
-1. 先固化 `10a`（已完成）到常规评测流水线；  
-2. 再落地 `10b`，补齐 `unjudged>0` 时的结论边界；  
-3. 最后落地 `10c`，形成季度级长期稳定性监控。  
+- 三场景方向不一致，或区间过宽导致主结论失去支撑：先收窄对外结论，再回查 A.0/A.1 是否需要更强过滤或人工复核补点。
 
 ---
 
-## 参考文献
+### C.3 跨季度稳定性评估（10c）
 
-### 相关论文
+**目标**：避免"一次评测撞运气"，把离线评测从单次快照升级为时间序列体检。
 
-1. **KNN-LM** (Khandelwal et al., 2021)
-   - 使用retriever作为hard negative来源
-   - 展示了检索based方法的有效性
+**核心设计**
 
-2. **Contriever** (Izacard et al., 2022)
-   - 对比学习训练检索模型
-   - 使用检索结果作为hard negative
-   - arXiv:2112.09118
+1. **季度切分**：按季度构建 out-of-time 评测切片。
+2. **分层评测**：按 query 类型（字段类 / 数字类 / 长证据类等）分层，识别局部回退。
+3. **滚动窗口**：跟踪 MRR/NDCG/P@10 及其置信区间趋势。
 
-3. **E5** (Wang et al., 2022)
-   - 使用query检索到的非相关文档作为hard negative
-   - 提出了困难负例挖掘的框架
-   - arXiv:2212.03533
+**验收标准**
 
-4. **BGE** (Xiao et al., 2023)
-   - 混合多种hard negative策略
-   - 工业界实践经验
-   - GitHub:FlagOpen/FlagEmbedding
+- 总体指标和关键分层指标都可追溯。
+- 报告能识别"总体提升但某分层回撤"的情况。
 
-5. **OHEM** (Shrivastava et al., 2016)
-   - Online Hard Example Mining在目标检测中的应用
-   - CVPR 2016
+**失败信号与回推**
 
-6. **ANCE** (Xiong et al., 2020)
-   - 使用模型置信度选择hard negatives
-   - Approximate Nearest Neighbor Negative Contrastive Estimation
-   - arXiv:2007.00808
-
-7. **RocketQA** (Qu et al., 2021)
-   - Curriculum Learning for dense retrieval
-   - EMNLP 2021
+- 季度趋势不稳，或关键分层持续回退：由评测 owner 触发回推，优先检查 A.0/A.1 校准与 review 边界，再决定是否调整 B 方向的策略。
 
 ---
 
-## 附录：实验设计建议
+### C.4 建议落地顺序
 
-### A/B测试方案
-
-如果要验证改进效果，建议按以下方式设计实验：
-
-| 实验组 | Hard Negative策略 | 目的 |
-|-------|------------------|------|
-| Baseline | 当前方法（检索排名） | 对比基准 |
-| Exp-1 | 混合策略（ratio=0.3） | 验证少量模型方法的收益 |
-| Exp-2 | 混合策略（ratio=0.5） | 验证平衡策略 |
-| Exp-3 | 混合策略（ratio=0.7） | 验证更多模型方法的收益 |
-| Exp-4 | Curriculum（warmup=3） | 验证动态难度调整 |
-| Exp-5 | Online Mining | 验证SOTA方法 |
-
-### 评估指标
-
-除了MRR@10，还应该关注：
-
-1. **不同位置的表现**：NDCG@1, NDCG@5, NDCG@10
-2. **困难查询的改进**：baseline排名低的query是否有提升
-3. **训练效率**：收敛速度、总训练时间
-4. **鲁棒性**：不同数据分布下的表现
+1. **先做 10a**：把显著性分析固化为常规输出，主指标和置信度同报——这是成本最低、收益最直接的一步。
+2. **再做 10b**：当 `unjudged` 非零时，给出三场景边界，避免过度解读单点指标。
+3. **最后做 10c**：建立季度级稳定性监控，防止"单次快照撞运气"式的乐观结论。
 
 ---
 
-## 结论
+### C.5 结论边界（统一口径）
 
-本文档的总体结论是：QAnchor 的下一步需要 **A/B 双轨并行**。
+结论能否被称为"可信趋势"，取决于**已落地的评测层**是否一致：
 
-1. **A 方向（训练数据质量）**  
-   - 先做阶段0（CE 复审）解决假 Hard Negative，再推进阶段1-3；
-   - 这是“提升模型上限”的主路径。
+- 仅 10a 落地时：主指标与显著性层方向须一致。
+- 10b 也落地后：额外要求三场景区间结论方向一致。
+- 10c 也落地后：额外要求跨季度趋势稳定，且关键分层没有持续回退。
 
-2. **B 方向（评测稳健性）**  
-   - 在现有 `10_evaluate + 10a` 基础上，补齐 `10b/10c`；
-   - 这是“提升结论可信度与时间稳定性”的主路径。
+尚未落地的层不纳入当前结论边界，但落地后自动升级约束。
 
-**建议执行顺序**：
-- 短期（可快速增信）：`10a` 常规化 + `10b` 原型验证  
-- 中期（可持续防守）：`10c` 分层季度评测上线  
-- 长期（性能突破）：A 方向阶段1-3逐步推进并与 B 方向联合评估
+若已实现的层中任一出现冲突：**自动降格结论措辞**（不需要人工决策）；是否进一步回推 A.0/A.1，由 owner 决定并留下文档证据。
 
 ---
 
-*文档版本: v3.0*
+## 文档治理
 
-*更新日期: 2026-03-03*
+### 两份文档的分工
 
+| 文档 | 职责 |
+|------|------|
+| 本文件（`docs/future_work.md`） | 路线图：做什么、为什么、怎么算完成、出问题怎么办 |
+| [`answer-matcher-2dos.md`](../memory-bank/future-2dos/answer-matcher-2dos.md) | 执行规格：脚本、参数值、样本配额、judge schema、精确阈值 |
+
+### 何时需要同步两份文档
+
+改了路线图，如果影响了阶段目标、依赖关系、gate 类型或反馈回路，需要同步检查执行规格。改了执行规格，如果影响了 CE 触发范围、风险桶定义或 matcher/CE 边界，需要同步更新路线图。
+
+典型触发场景：新增或删除 gate 类型、调整 CE 触发条件、修改风险桶定义、修改延期项边界。
+
+### 每次修改后的链接检查
+
+确认以下三条路径仍然可达：
+
+- `README` → `docs/future_work.md`
+- `docs/future_work.md` → `memory-bank/future-2dos/answer-matcher-2dos.md`
+- `memory-bank/future-2dos/answer-matcher-2dos.md` → `docs/future_work.md`
+
+### 回推流程
+
+当 C（评测稳健性）发现关键指标回退、结论边界不稳或新的系统性问题时，由当前方向 owner 或评测 owner 决定是否触发回推。
+
+一旦决定回推到 A.0/A.1，必须留下：
+- 一条简短复盘记录（发现了什么问题）
+- 一个新增或修订的 gate 草案（下次如何拦住同类问题）
+- 必要的文档同步更新
+
+回推不是口头动作。没有留下上述产物时，不应直接重新进入 B/C 阶段。
+
+### 执行规格位置
+
+matcher/CE 的执行规格当前保留在 `memory-bank/future-2dos/answer-matcher-2dos.md`。若未来需要更正式的审计或交接，再考虑迁移到 `docs/specs/`，迁移时替换旧位置而不是并存复制。

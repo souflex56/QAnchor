@@ -417,10 +417,18 @@ python scripts/10a_eval_significance.py \
 
 ---
 
-## 🔭 Future Work（尚未在主线评测脚本落地）
-- **A1 数据去噪（CE 复审）**：对“规则未匹配”的候选再做 Cross-Encoder 复核，隔离 uncertain 样本，输出更干净的 `pos/verified_neg`，减少假 Hard Negative 污染。
-- **A2 Hard Negative 策略升级**：在当前“检索排名选负例”之外，引入混合策略 / Curriculum / Online Mining，让负例难度随模型能力动态提升。
-- **B1 `unjudged_rate>0` 敏感性分析**：当存在未标注候选时，分别给出下界（全负）/先验场景/上界（全正）区间，而不是只报单点分数。
-- **B2 跨季度稳定性评估**：按 query 类型与时间切片做 out-of-time 分层评测，结合滚动窗口与季度 CI，防止“单次评测撞运气”。
+## 🔭 Future Work
 
-完整路线图与实施细节见：`docs/future_work.md`
+当前 pipeline 已跑通闭环，但还有三类问题待解决，必须按顺序推进：
+
+**A. 先修上游数据质量（最高优先级）**
+- `A.0 Matcher 校准`：规则匹配器目前对短数字和年份判断偏宽松，导致部分 chunk 被错误标注（比如"2022 年营收 120 亿"会被 2023 年营收的 query 误命中）。需要校准这两类系统性错误后，再进行后续步骤。
+- `A.1 CE 高风险复审`：matcher 校准后，仍有一部分高排名候选"漏网"——这类候选不能直接丢进负例池，需要用 Cross-Encoder 做二次审核，把潜在正例救回来，把确认的负例标记干净。
+
+**B. 再升级负例选取策略**  
+上游数据干净后，逐步探索混合策略（检索排名 + 模型置信度）→ Curriculum Learning（由易到难）→ Online Mining（每 batch 动态选）。在 A 轨数据质量未稳定前，B 轨的任何改进都不可靠。
+
+**C. 同步建立评测护栏**  
+目前只报点指标，没有不确定性边界。需要固化显著性分析（10a），补齐 `unjudged` 敏感性分析（10b）和跨季度稳定性监控（10c）。一旦 C 轨发现评测结论不稳定，应优先回推 A 轨复校准，而不是继续调 B 轨参数。
+
+完整路线图（含每个阶段的验收标准和回推规则）见：[`docs/future_work.md`](docs/future_work.md)
