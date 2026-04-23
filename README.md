@@ -6,15 +6,15 @@
 ![Best MRR@10](https://img.shields.io/badge/MRR%4010-0.7758-brightgreen.svg)
 ![Status](https://img.shields.io/badge/status-Phase1%20complete-green.svg)
 
-QAnchor 是一个端到端的检索优化闭环：在缺乏高质量标注数据的前提下，利用现有 QA 对 + Reverse Mining 自动构建训练数据，微调 Reranker，并通过 Gold Eval 量化检索排序增益。
+QAnchor 是一个面向中文金融年报问答场景的检索排序优化 pipeline。它解决的问题不是"从零训练一个 QA 系统"，而是：**在缺乏文档片段级（chunk-level）相关性标注的情况下，利用已有的问答答案作为弱监督信号，通过 Reverse Mining 自动构造训练数据，微调 Cross-Encoder Reranker，最终以 Gold Eval 量化检索排序增益**。
 
-核心故事线：**PDF 结构化分块 → 多路召回 → 反向挖掘训练集 → Listwise 微调 → Gold Eval 评测**。
+Pipeline 概览：**年报 PDF 分块 → 多路检索候选 → 用问答答案反推正负例 → 微调排序模型 → 评测排序提升**。
 
 ---
 
 ## 核心结果
 
-> 微调 Qwen3-Reranker-0.6B 后，MRR@10 从 **0.6115** 提升至 **0.7758**（+26.9%）。
+> 微调 Qwen3-Reranker-0.6B 后，MRR@10 从 **0.6115** 提升至 **0.7758**（+26.9%）；对 `Base → Finetuned` 的配对 bootstrap / sign-flip 检验显示提升显著为正。
 
 | 模型配置 | 阶段 | max_length | MRR@10 | NDCG@10 | P@10 |
 | --- | --- | --- | --- | --- | --- |
@@ -28,46 +28,64 @@ QAnchor 是一个端到端的检索优化闭环：在缺乏高质量标注数据
 本次最优为 **Qwen3-Reranker-0.6B-seq-cls Finetuned**。`max_length` 为 reranker 输入序列的最大长度（Query + Document 拼接后的 token 序列，超出会截断）。
 
 完整报告：`data/output/eval/stage1_reranker_comparison_report_20260118_v2.md`
-统计显著性报告（`data/output/eval/qwen3-reranker-0.6b/significance_report_*.md`）检验的是 `embedding_only → hybrid_rrf` 的差异，而非 Base → Finetuned。
+统计显著性报告：`data/output/eval/qwen3-reranker-0.6b/significance_report_qwen3_template_20260117_base_vs_finetuned_20260423.md`
 
 ### 模型发布
 
-<!-- TODO: 发布后替换为实际 repo id -->
+已发布的 Qwen3 Reranker：
+- Merged：[`souflex56/qanchor-reranker-qwen3-0.6b-merged`](https://huggingface.co/souflex56/qanchor-reranker-qwen3-0.6b-merged)
+- LoRA：[`souflex56/qanchor-reranker-qwen3-0.6b-lora`](https://huggingface.co/souflex56/qanchor-reranker-qwen3-0.6b-lora)
 
-微调后的 Qwen3-Reranker-0.6B 和 BGE-v2-m3 将发布到 HuggingFace（repo id 待定）。
+安装依赖（`pip install -r requirements.txt`）后，可通过 HuggingFace repo id 加载模型。默认推荐使用 `merged` 版本，下方示例即为 merged 版本的用法；`lora` 版本保留为 LoRA / adapter 形态分发，需配合 PEFT 加载。
 
-**Qwen3 Reranker**（需拼接 chat template，参考 [base model](https://huggingface.co/tomaarsen/Qwen3-Reranker-0.6B-seq-cls)）：
+**Qwen3 Reranker（推荐使用 merged 版本）**：Qwen3 需要拼接 chat template，具体格式可参考 [base model](https://huggingface.co/tomaarsen/Qwen3-Reranker-0.6B-seq-cls) 的 "Updated Sentence Transformers Usage"。
 
 ```python
 from sentence_transformers import CrossEncoder
 
-model = CrossEncoder("YOUR_HF_USERNAME/QAnchor-Qwen3-Reranker-0.6B-financial")
+model = CrossEncoder("souflex56/qanchor-reranker-qwen3-0.6b-merged")
 queries = model.format_queries(["什么是营业收入？"])
 docs = model.format_document(["公司2024年营业收入为..."])
 scores = model.predict(list(zip(queries, docs)))
 ```
 
-**BGE-v2-m3**（直接传 pair）：
+---
 
-```python
-from sentence_transformers import CrossEncoder
+## 问题背景与数据来源
 
-model = CrossEncoder("YOUR_HF_USERNAME/QAnchor-BGE-v2-m3-financial")
-scores = model.predict([("什么是营业收入？", "公司2024年营业收入为...")])
-```
+### 数据从哪来
+
+本项目使用 **FinGLM** 年报问答数据作为上游问答信号。这些数据涵盖中国 A 股上市公司年度报告，每条样本包含一个金融领域问题（query）及对应的标准答案（answer）。
+
+仓库中通过以下文件承载这一信号：
+- `finglm_data_store/finglm_master.jsonl` — FinGLM 标准答案库（query ↔ answer 映射）
+- `finglm_data_store/` — 数据索引与统计文件
+
+### 为什么仍然是弱监督
+
+本项目**缺乏的是文档片段级（chunk-level）的相关性标注**，而不是完全没有问答答案信号。已有数据是 **question-answer 级别** 的：每条记录告诉了我们"这个问题的答案文本是什么"，但**没有标注"答案出现在 PDF 的哪个具体 chunk"**。
+
+Reverse Mining 的作用，正是把 answer-level 信号反向映射回候选 chunk，自动构造训练所需的**正例与 hard negatives**。因此，本项目属于弱监督排序优化，而非直接使用人工 chunk 标注做强监督训练。
 
 ---
 
-## 为什么做这个
+## 方法概览
 
-**问题**：金融长文档（A 股年报、季报）+ 无标注数据 → 通用 RAG 方案水土不服。现有通用框架可以快速搭出 demo，但在以下场景中难以获得有指标保障的检索质量：
+### 问题
+
+金融长文档（A 股年报）+ 无 chunk 级标注数据 → 通用 RAG 方案难以保证检索质量。
 - 文档以 PDF 表格为主，结构化分块质量直接影响下游
-- 缺乏标注数据，无法直接微调排序模型
+- 缺乏 chunk 级相关性标注，无法直接微调排序模型
 - 跨文档检索噪声大，需要限定检索范围
 
-**解法**：Reverse Mining 弱监督 + Listwise 微调。从已有 QA 对中自动挖掘训练 triplets（正例 + hard negatives），用 Listwise Softmax-CE Loss 微调 Cross-Encoder Reranker，直接对齐 MRR/NDCG 排序指标。
+### 解法
 
-**与通用 RAG 框架的区别**：
+采用 Reverse Mining 弱监督 + Listwise 微调：
+- 从已有问答答案中自动挖掘训练 triplets（正例 + hard negatives）
+- 使用 Listwise Softmax-CE Loss 微调 Cross-Encoder Reranker
+- 直接对齐 MRR/NDCG 排序指标
+
+### 与通用 RAG 框架的区别
 
 | 维度 | 通用框架（LangChain/LlamaIndex） | QAnchor |
 |------|----------------------------------|---------|
@@ -111,6 +129,11 @@ scores = model.predict([("什么是营业收入？", "公司2024年营业收入�
 └─────────────────────────────────────────────────────────────┘
 ```
 
+**说明**：
+- Step 3-5 的"三路检索基线"是微调 Reranker 之前的候选召回与排序起点
+- Step 6 的 Answer Matching 使用 `finglm_master.jsonl` 中的答案信号进行正例/负例判定
+- Step 7 的"多标注裁决"指多个模型分别对 Gold Eval 候选相关性做判定，再汇总裁决
+
 | 模块 | 功能 | 关键代码 |
 |------|------|----------|
 | 数据分块 | PDF → parent/child 层级 chunks | `src/chunk_manager.py` |
@@ -126,7 +149,7 @@ scores = model.predict([("什么是营业收入？", "公司2024年营业收入�
 ## 项目范围与数据规模
 
 **边界条件（Phase1）**
-- 仅覆盖 Type1（type==1）
+- 仅覆盖 Type1（单公司、单年份财报问答）
 - 仅做**同文档证据排序**（不做跨 PDF 检索）
 - 检索范围限制为 query 对应 `pdf_stem` 的 chunks
 
@@ -138,6 +161,8 @@ scores = model.predict([("什么是营业收入？", "公司2024年营业收入�
 ---
 
 ## 快速开始
+
+> 如果只想复现弱监督训练与评测，repo 已预置 retrieval / mining / train / eval 相关中间产物，`git clone` 后可直接运行 Step A 及之后的脚本。如果想从原始 PDF 开始，需要额外下载 PDF 和 chunks。
 
 ### 环境安装
 
@@ -154,11 +179,13 @@ PDF → ① 分块 → ② 三路检索 → ③ Reverse Mining → ④ 微调 �
 ```
 
 - `✅ 自带数据`：repo 中已预置该步骤的输入/输出文件，`git clone` 后可直接运行
-- `⚠️ 需下载`：PDF 原文和分块结果体积较大，不在 repo 中。可从[百度云下载](PLACEHOLDER_LINK)解压到 `data/output/chunks/`；或自行跑分块脚本（较慢，见 [`docs/reproduction.md`](docs/reproduction.md) Step 3）
+- `⚠️ 需下载`：PDF 原文和分块结果体积较大，不在 repo 中。可自行跑分块脚本（较慢，见 [docs/reproduction.md](docs/reproduction.md) Step 3）
 
 ### Step A: Reverse Mining — 从 QA 答案中自动挖掘训练数据
 
-> **在干什么**：读取 QA 标准答案库（`finglm_master.jsonl`），用 key-value 规则匹配三路检索的 Top-50 结果。匹配成功 → 正例；高排名但未匹配 → hard negative。自动产出 (query, positive, negatives) triplets。
+> **在干什么**：读取 FinGLM 标准答案库（`finglm_master.jsonl`），用 key-value 规则匹配三路检索的 Top-50 结果。匹配成功 → 正例；高排名但未匹配 → hard negative。自动产出 (query, positive, negatives) triplets。
+>
+> `finglm_master.jsonl` 中的 answer 不是 chunk 标签，而是 Reverse Mining 的匹配依据。
 
 ```bash
 python scripts/06_reverse_mining.py --stage stage1
@@ -202,7 +229,7 @@ QAnchor/
 │   ├── input/                # 原始 PDF 数据
 │   └── output/               # 全部产出（chunks / retrieval / mining / train / eval / annotations）
 ├── docs/                     # 项目文档
-└── finglm_data_store/        # 数据索引与统计
+└── finglm_data_store/        # FinGLM 问答映射、标准答案索引与统计文件
 ```
 
 **关键配置文件**：`config/weak_supervision_config.yaml` 统一管理分块、检索、融合参数。
@@ -221,6 +248,22 @@ QAnchor/
 
 ---
 
+## 设计决策
+
+### 为什么只做 Type1 / 同文档检索
+
+Phase1 仅覆盖 Type1（单公司、单年份财报问答），检索范围限定在 query 对应的 `pdf_stem` 内。这降低了跨文档噪声，使排序优化目标更聚焦——在单个 PDF 的 chunk 集合中重新排好序，而非跨文档召回。
+
+### 为什么选 0.6B 小模型
+
+LoRA 微调在单卡 RTX 4090（24GB）上完成，评测在 Apple M2 Max（MPS）上运行。0.6B 经弱监督微调后 MRR@10 从 0.6115 提升至 0.7758（+26.9%），在性能和工程门槛之间取得了较好的平衡。
+
+### 为什么用 Listwise 而不是 Pairwise
+
+Listwise Softmax-CE Loss 直接对齐 MRR/NDCG 的排序目标，相比 Pairwise 更适合 Top-k 排序场景。原理说明详见 [docs/faq.md](docs/faq.md)。
+
+---
+
 ## 致谢
 
 本项目检索评测依赖以下开源项目：
@@ -229,6 +272,4 @@ QAnchor/
 - [Qwen3-Reranker-0.6B-seq-cls](https://huggingface.co/tomaarsen/Qwen3-Reranker-0.6B-seq-cls) — Cross-Encoder Reranker 基座模型（最佳）
 - [BGE-v2-m3](https://huggingface.co/BAAI/bge-m3) — Cross-Encoder Reranker 对比模型
 
-**为什么选 0.6B 小模型？** LoRA 微调在单卡 RTX 4090（24GB）上完成，评测在 Apple M2 Max（MPS）上运行。0.6B 经弱监督微调后 MRR@10 从 0.6115 提升至 0.7758（+26.9%），在性能和工程门槛之间取得了较好的平衡。
-
-**可替换其他模型**：Embedding 和 Reranker 的模型路径通过 `config/weak_supervision_config.yaml` 配置。切换 Reranker 时需注意 `--pair-format` 参数——不同模型的输入格式不同（如 Qwen3 用 `qwen3_template`，通用模型用 `hf_pair`），脚本支持 `auto` 自动检测，也可手动指定。详见 [`docs/reproduction.md`](docs/reproduction.md) Step 7。
+**可替换其他模型**：Embedding 和 Reranker 的模型路径通过 `config/weak_supervision_config.yaml` 配置。切换 Reranker 时需注意 `--pair-format` 参数——不同模型的输入格式不同（如 Qwen3 用 `qwen3_template`，通用模型用 `hf_pair`），脚本支持 `auto` 自动检测，也可手动指定。详见 [docs/reproduction.md](docs/reproduction.md) Step 7。
