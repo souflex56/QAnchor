@@ -55,10 +55,12 @@ scores = model.predict(list(zip(queries, docs)))
 
 ### 数据从哪来
 
-本项目使用 **FinGLM** 年报问答数据作为上游问答信号。这些数据涵盖中国 A 股上市公司年度报告，每条样本包含一个金融领域问题（query）及对应的标准答案（answer）。
+本项目使用 **FinGLM** 年报问答数据作为上游问答信号。这些数据涵盖中国 A 股上市公司年度报告，每条样本包含一个金融领域问题（query）及对应的**人工标注标准答案**（answer）。
+
+FinGLM 数据的清洗、去重、题型分析和公司/年份维度统计见 [`FinGLM-data-eda`](https://github.com/souflex56/FinGLM-data-eda)。本项目沿用其中构建出的标准答案映射，把它作为 Reverse Mining 的答案来源。
 
 仓库中通过以下文件承载这一信号：
-- `finglm_data_store/finglm_master.jsonl` — FinGLM 标准答案库（query ↔ answer 映射）
+- `finglm_data_store/finglm_master.jsonl` — FinGLM 人工标注标准答案库（query ↔ answer 映射）
 - `finglm_data_store/` — 数据索引与统计文件
 
 ### 为什么仍然是弱监督
@@ -77,6 +79,8 @@ Reverse Mining 的作用，正是把 answer-level 信号反向映射回候选 ch
 - 文档以 PDF 表格为主，结构化分块质量直接影响下游
 - 缺乏 chunk 级相关性标注，无法直接微调排序模型
 - 跨文档检索噪声大，需要限定检索范围
+
+这个问题定义来自对 FinGLM 年报问答数据的前期梳理：数据里有标准答案和题型/维度统计，但没有直接指向 PDF chunk 的证据标注。
 
 ### 解法
 
